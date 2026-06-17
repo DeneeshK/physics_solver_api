@@ -45,7 +45,7 @@ NON_SOLVABLE_SYMBOLS = {'constant'}
 
 # ── Groq API ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
-MODEL_FAST       = "llama-3.1-8b-instant"      # Stage 1 parse + Stage 2 selection
+MODEL_FAST       = "llama-3.3-70b-versatile"      # Stage 1 parse + Stage 2 selection
 MODEL_SMART      = "llama-3.3-70b-versatile"   # Stage 4 narration + Stage 5 distractors
 GROQ_TEMPERATURE = 0.1
 
