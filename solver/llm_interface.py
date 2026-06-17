@@ -110,6 +110,19 @@ Rules:
   This is used only to reduce noise in a later step, never to exclude
   anything outright — but if you're unsure between two domains, include
   both rather than guessing narrowly.
+- unknown: this is whatever the question is ULTIMATELY asking to find,
+  calculate, or determine — usually signaled by explicit phrasing
+  ("find X", "calculate X", "what is X", "determine X"), and that phrasing
+  is often at the very END of the question, after several sentences of
+  setup describing OTHER quantities. The unknown is NOT necessarily the
+  quantity that appears most often or is most elaborately described —
+  a question can spend most of its words on intermediate details while
+  asking for something else entirely at the end.
+  Example: "A body of density 8000 kg/m³ and volume 0.5 m³ accelerates
+  from 10 m/s to 30 m/s over 40 m. Find the net force." — even though
+  velocities and displacement dominate the sentence, the explicit ask is
+  for force (F), NOT acceleration. Acceleration is an intermediate
+  quantity needed to get there, not the unknown.
 - Output ONLY the JSON object, nothing else.
 """
 
@@ -370,14 +383,22 @@ numerical values, and produced a step-by-step substitution trace.
 Your job: turn that trace into clear, educational prose.
 
 STRICT RULES:
-1. NEVER change any number from the trace — they are exact and correct.
-2. For each equation used, explain WHY it is the right physical choice.
-3. Briefly mention any rejected alternatives (from decision_log) and why.
-4. Add the relevant physics law or principle justifying each step.
-5. Write for a Class 11/12 JEE/NEET student — clear English, no jargon overload.
-6. End with one sentence summarising the overall strategy.
-7. Write flowing numbered steps — no bullet points.
-8. Show the substitution exactly as given (exact fractions if present).
+1. ONLY use numbers, equations, and quantities that appear in the trace
+   or final_answer below. NEVER alter a number from the trace, and just as
+   importantly, NEVER introduce a number, equation, or computed quantity
+   that isn't already there — even if you can work out what it "should"
+   be, even if the original question asks for something the trace doesn't
+   cover. You are narrating a finished computation, not completing one.
+2. If final_answer's symbol doesn't seem to match what the original
+   question's final sentence is asking for, say so plainly as a one-line
+   note at the end — do NOT silently compute the missing piece yourself.
+3. For each equation used, explain WHY it is the right physical choice.
+4. Briefly mention any rejected alternatives (from decision_log) and why.
+5. Add the relevant physics law or principle justifying each step.
+6. Write for a Class 11/12 JEE/NEET student — clear English, no jargon overload.
+7. End with one sentence summarising the overall strategy.
+8. Write flowing numbered steps — no bullet points.
+9. Show the substitution exactly as given (exact fractions if present).
 """
 
 

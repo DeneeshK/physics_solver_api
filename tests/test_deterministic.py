@@ -132,6 +132,37 @@ def test_candidates_conservation_law_excluded():
     print(f"\n[test_candidates_conservation_law_excluded] PASSED")
 
 
+def test_parse_system_has_target_identification_rule():
+    """
+    Regression guard, not behavioral proof: confirms the explicit
+    target-identification instruction (added after Stage 1 misidentified
+    'a' instead of 'F' for a question explicitly asking "find the net
+    force") is present, so a future edit can't silently drop it. Whether
+    the LLM actually follows it reliably needs live testing — this just
+    catches the instruction itself disappearing.
+    """
+    print("\n[test_parse_system_has_target_identification_rule]")
+    from solver.llm_interface import _build_parse_system
+    system = _build_parse_system({"kinematics"})
+    assert "ULTIMATELY asking to find" in system
+    assert "net force" in system, "the anchoring example from the real failure case should be present"
+    print("  PASSED")
+
+
+def test_narrate_system_forbids_new_computation():
+    """
+    Regression guard for the more serious bug: narration introduced an
+    entire unverified mass+force calculation that was never in the trace,
+    because the old rule only forbade *altering* trace numbers, not
+    *introducing* new ones. Confirms the closed rule is present.
+    """
+    print("\n[test_narrate_system_forbids_new_computation]")
+    from solver.llm_interface import NARRATE_SYSTEM
+    assert "NEVER introduce a number" in NARRATE_SYSTEM
+    assert "narrating a finished computation, not completing one" in NARRATE_SYSTEM
+    print("  PASSED")
+
+
 def test_domain_filter_narrows_candidates():
     """
     allowed_domains should shrink the candidate set to just the matching
@@ -653,6 +684,8 @@ def run_all():
         test_candidates_symbol_F,
         test_candidates_visited_exclusion,
         test_candidates_conservation_law_excluded,
+        test_parse_system_has_target_identification_rule,
+        test_narrate_system_forbids_new_computation,
         test_domain_filter_narrows_candidates,
         test_domain_filter_fallback_when_empty,
         test_domain_filter_fixes_real_overflow_scenario,

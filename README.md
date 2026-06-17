@@ -264,6 +264,57 @@ for a specific failure mode, not a general-purpose correctness guarantee.
 
 ---
 
+## Two bugs found via live testing: wrong target, and narration filling the gap
+
+A live run on "...accelerates from 10 m/s to 30 m/s over 40 m. Find the
+net force" came back with `answer.symbol = "a"` (acceleration) instead
+of `F`, with `chain_summary` showing only the kinematics step. Stage 1
+picked the wrong unknown — a real extraction failure, not a quality
+nuance, since the question explicitly says "find the net force." This
+ran on the stock config (`llama-3.1-8b-instant` for Stage 1, unchanged),
+so it isn't explained by a model swap; it's a latent prompt weakness —
+there was never an explicit instruction for *how* to identify the
+unknown, just the JSON schema asking for one.
+
+Worse: the narration (Stage 4) then computed mass (8000×0.5=4000kg) and
+force (4000×10=40000N) on its own — neither appears in `decision_log` or
+`chain_summary` — and presented it in prose as if it were part of the
+verified solution. It saw the question asking for force, saw the trace
+only covered acceleration, and quietly completed the chain itself. That's
+the more serious bug: the old narration rule ("never change a number from
+the trace") only forbade *altering* existing numbers, not *introducing*
+new ones, so an LLM computing its own unverified arithmetic and dressing
+it up as settled fact slipped through exactly the gap this architecture
+exists to close.
+
+Two fixes, both in `llm_interface.py`:
+
+1. **Stage 1** now has an explicit rule for identifying the unknown —
+   look for "find/calculate/determine" phrasing, usually at the end of
+   the question, and don't default to whatever quantity dominates the
+   setup. The instruction is anchored directly on this exact failing
+   question as a worked example.
+2. **Stage 4**'s rule 1 is rewritten: never alter a trace number *and*
+   never introduce one that wasn't already there, even if the original
+   question asks for something the trace doesn't cover. Rule 2 makes the
+   right behavior explicit: if `final_answer` doesn't seem to match what
+   the question's final sentence asks for, say so as a one-line note —
+   don't silently compute the missing piece.
+
+Important honesty check on this one: this is a probabilistic prompt
+fix, not a deterministic code bug, so it can't be proven correct by unit
+tests the way the domain-filtering fix could. The two new tests
+(`test_parse_system_has_target_identification_rule`,
+`test_narrate_system_forbids_new_computation`) only guard against the
+instructions themselves disappearing in a future edit — they don't (and
+can't) prove the LLM now reliably follows them. `target_identification_
+stress_test.md` has 5 questions sharing the same structural pattern
+(heavy setup about one quantity, explicit ask for another at the end)
+for live validation — run each a couple of times, since temperature=0.1
+still allows some sampling variance.
+
+---
+
 ## Known limitation: graph text is templated, not hand-written per equation
 
 `rag_text` and `conditions` give the Stage 2 LLM most of its disambiguating
