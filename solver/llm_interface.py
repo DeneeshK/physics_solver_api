@@ -64,7 +64,9 @@ _CONSTANTS_CATALOG_TEXT = "\n".join(
     for sym, meta in IMPLICIT_CONSTANTS_CATALOG.items()
 )
 
-PARSE_SYSTEM = f"""
+def _build_parse_system(valid_domains: set[str]) -> str:
+    domains_text = ", ".join(sorted(valid_domains)) if valid_domains else "(none provided)"
+    return f"""
 You are a JEE/NEET physics question parser. Extract structured information.
 
 Respond ONLY with valid JSON in this EXACT format:
@@ -83,7 +85,8 @@ Respond ONLY with valid JSON in this EXACT format:
     "unit": "<SI unit>",
     "dimension": "<dimensional formula>"
   }},
-  "implicit_constants": ["<symbol1>", "<symbol2>"]
+  "implicit_constants": ["<symbol1>", "<symbol2>"],
+  "likely_domains": ["<domain1>", "<domain2>"]
 }}
 
 Rules:
@@ -102,18 +105,27 @@ Rules:
   Examples: "free fall" → ["g"], "in vacuum" with Coulomb → ["epsilon_0"],
   "universal gravitation" → ["G"]. Do NOT list constants whose value is
   already given explicitly in the problem.
+- likely_domains: list 1-3 domains, using EXACT spelling, from this set that
+  the problem's physics involves: {domains_text}
+  This is used only to reduce noise in a later step, never to exclude
+  anything outright — but if you're unsure between two domains, include
+  both rather than guessing narrowly.
 - Output ONLY the JSON object, nothing else.
 """
 
 
-def parse_question(question: str) -> dict:
+def parse_question(question: str, valid_domains: set[str] | None = None) -> dict:
     """
-    Returns dict: {given, unknown, implicit_constants}
+    Returns dict: {given, unknown, implicit_constants, likely_domains}
     given: {symbol: {value, unit, name, dimension}}
     unknown: {symbol, name, unit, dimension}
     implicit_constants: [symbol, ...]
+    likely_domains: [domain, ...]   -- used downstream only as an optional
+                                        narrowing hint with a guaranteed
+                                        fallback; never a hard exclusion.
     """
-    raw = _call(MODEL_FAST, PARSE_SYSTEM, question)
+    system = _build_parse_system(valid_domains or set())
+    raw = _call(MODEL_FAST, system, question)
     try:
         parsed = _extract_json(raw)
     except (json.JSONDecodeError, ValueError) as e:
@@ -136,6 +148,7 @@ def parse_question(question: str) -> dict:
                 "dimension": cat["dimension"],
             }
 
+    parsed.setdefault("likely_domains", [])
     return parsed
 
 
@@ -190,22 +203,50 @@ For deferred items: {"needed_symbol": "...", "decision": "defer", "reason": "...
 """
 
 
-def _format_candidate(eq: dict) -> dict:
-    """Compact but complete representation of an equation for the LLM prompt."""
-    # Truncate rag_text to 120 chars — enough for the concept, not token-expensive
+def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
+    """
+    Compact but complete representation of an equation for the LLM prompt.
+    `known_symbols`: variables already shown in the "ALREADY KNOWN" section —
+    excluded here since repeating them in every single candidate is pure
+    redundancy, not signal. The symbol being solved for is never in
+    known_symbols by construction (it wouldn't be a frontier item otherwise),
+    so it always survives this filter.
+    """
     rag = eq.get("rag_text", "")
     if len(rag) > 120:
         rag = rag[:117] + "..."
+    known_symbols = known_symbols or set()
     return {
         "id":           eq["id"],
         "equation":     eq["equation_str"],
         "description":  rag,
-        "conditions":   eq.get("conditions", [])[:2],  # first 2 conditions
+        "conditions":   eq.get("conditions", [])[:2],
         "variables":    {
             sym: {"name": meta["name"], "unit": meta["unit"]}
             for sym, meta in eq["variables"].items()
+            if sym not in known_symbols
         },
     }
+
+
+def estimate_round_tokens(round_data: list[dict]) -> int:
+    """
+    Rough token estimate (chars // 4) for one round's candidate payload,
+    built the same way call_round_selector formats it. Used by
+    frontier_resolver as a safety valve: if a batched round's estimate
+    exceeds config.MAX_CANDIDATES_TOKENS_PER_ROUND, it splits the round
+    into sequential single-symbol calls instead of risking an oversized
+    request (this is what crashed with a real 413 on llama-3.1-8b-instant).
+    """
+    sections = []
+    for rd in round_data:
+        fi = rd["frontier_item"]
+        sections.append({
+            "symbol": fi.symbol, "name": fi.name,
+            "unit": fi.unit, "dimension": fi.dimension,
+            "candidates": [_format_candidate(eq) for eq in rd["candidates"]],
+        })
+    return len(json.dumps(sections, separators=(",", ":"))) // 4
 
 
 def call_round_selector(
@@ -224,12 +265,14 @@ def call_round_selector(
     """
     # Build available summary (omit constants — they're always implicit)
     avail_lines = []
+    known_symbols = set()
     for sym, meta in available.items():
         val = meta.get("value")
         if val is not None:
             avail_lines.append(
                 f"  {sym} ({meta.get('name', sym)}): {val} {meta.get('unit', '')}"
             )
+            known_symbols.add(sym)
 
     # Build needed quantities section
     needed_sections = []
@@ -241,7 +284,7 @@ def call_round_selector(
             "name":       fi.name,
             "unit":       fi.unit,
             "dimension":  fi.dimension,
-            "candidates": [_format_candidate(eq) for eq in cands],
+            "candidates": [_format_candidate(eq, known_symbols) for eq in cands],
         }
         needed_sections.append(section)
 
@@ -249,7 +292,7 @@ def call_round_selector(
         f"ORIGINAL QUESTION:\n{question}\n\n"
         f"ALREADY KNOWN:\n" + ("\n".join(avail_lines) or "  (none yet)") + "\n\n"
         f"NEEDED QUANTITIES THIS ROUND (round {round_num}):\n"
-        + json.dumps(needed_sections, indent=2)
+        + json.dumps(needed_sections, separators=(",", ":"))
     )
 
     raw = _call(MODEL_FAST, ROUND_SELECT_SYSTEM, user_prompt)

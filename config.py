@@ -24,6 +24,14 @@ GRAPH_HOPS      = 1
 # ── Frontier resolver ─────────────────────────────────────────────────────────
 MAX_CHAIN_DEPTH = 6   # max frontier resolution rounds
 
+# Safety valve: rough token budget (chars // 4) for a single batched round's
+# candidate payload. If domain-filtered candidates for a round still estimate
+# above this, frontier_resolver splits that round into sequential per-symbol
+# calls instead of one batched call, rather than risking an oversized request.
+# Headroom: system prompt (~500 tok) + question + "already known" section
+# need to fit alongside this within the model's per-request token limit.
+MAX_CANDIDATES_TOKENS_PER_ROUND = 4000
+
 # Physical constants — never treated as unknowns; always excluded from
 # the frontier (the resolver will never try to "solve for" any of these).
 PHYSICAL_CONSTANTS = {
@@ -45,7 +53,7 @@ NON_SOLVABLE_SYMBOLS = {'constant'}
 
 # ── Groq API ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
-MODEL_FAST       = "llama-3.3-70b-versatile"      # Stage 1 parse + Stage 2 selection
+MODEL_FAST       = "llama-3.1-8b-instant"      # Stage 1 parse + Stage 2 selection
 MODEL_SMART      = "llama-3.3-70b-versatile"   # Stage 4 narration + Stage 5 distractors
 GROQ_TEMPERATURE = 0.1
 

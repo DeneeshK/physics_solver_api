@@ -132,6 +132,130 @@ def test_candidates_conservation_law_excluded():
     print(f"\n[test_candidates_conservation_law_excluded] PASSED")
 
 
+def test_domain_filter_narrows_candidates():
+    """
+    allowed_domains should shrink the candidate set to just the matching
+    domain(s) — this is the actual token-reduction mechanism.
+    """
+    print("\n[test_domain_filter_narrows_candidates]")
+    g = get_graph()
+    unfiltered = g.candidates_for_quantity("m", "mass", "M", set())
+    filtered   = g.candidates_for_quantity(
+        "m", "mass", "M", set(), allowed_domains={"laws_of_motion"}
+    )
+    print(f"  m: {len(unfiltered)} unfiltered -> {len(filtered)} filtered to laws_of_motion")
+    assert len(filtered) < len(unfiltered), "domain filter should narrow the set"
+    assert all(c.get("domain") == "laws_of_motion" for c in filtered)
+    assert "laws_of_motion_newton_second_law" in {c["id"] for c in filtered}
+    print("  PASSED")
+
+
+def test_domain_filter_fallback_when_empty():
+    """
+    CRITICAL SAFETY PROPERTY: if the domain guess doesn't match anything for
+    this quantity, fall back to the full set — never silently return zero
+    candidates. This is what keeps domain filtering from reintroducing the
+    original "correct equation got excluded" failure mode.
+    """
+    print("\n[test_domain_filter_fallback_when_empty]")
+    g = get_graph()
+    unfiltered = g.candidates_for_quantity("m", "mass", "M", set())
+    # 'sound' is a real domain in the graph, but has zero candidates for 'm'
+    fallback = g.candidates_for_quantity(
+        "m", "mass", "M", set(), allowed_domains={"sound"}
+    )
+    print(f"  m with allowed_domains={{'sound'}} (no match): {len(fallback)} candidates")
+    assert len(fallback) == len(unfiltered), (
+        "an empty domain match must fall back to the full set, not return zero"
+    )
+    print("  PASSED")
+
+
+def test_domain_filter_fixes_real_overflow_scenario():
+    """
+    Regression for the actual production crash: a Groq 413 (Request too
+    large, limit 6000, requested 8202) on the m+a combined round after
+    picking F=m*a. Reproduces that exact round and confirms domain
+    filtering brings it back under budget.
+    """
+    print("\n[test_domain_filter_fixes_real_overflow_scenario]")
+    from solver.llm_interface import estimate_round_tokens
+    from config import MAX_CANDIDATES_TOKENS_PER_ROUND
+
+    g = get_graph()
+    visited = {"laws_of_motion_newton_second_law"}
+    m_unfiltered = g.candidates_for_quantity("m", "mass", "M", visited)
+    a_unfiltered = g.candidates_for_quantity("a", "acceleration", "LT-2", visited)
+    round_data_unfiltered = [
+        {"frontier_item": fi("m", "mass", "kg", "M"), "candidates": m_unfiltered},
+        {"frontier_item": fi("a", "acceleration", "m/s^2", "LT-2"), "candidates": a_unfiltered},
+    ]
+    tokens_unfiltered = estimate_round_tokens(round_data_unfiltered)
+
+    allowed = {"laws_of_motion", "kinematics"}
+    m_filtered = g.candidates_for_quantity("m", "mass", "M", visited, allowed_domains=allowed)
+    a_filtered = g.candidates_for_quantity("a", "acceleration", "LT-2", visited, allowed_domains=allowed)
+    round_data_filtered = [
+        {"frontier_item": fi("m", "mass", "kg", "M"), "candidates": m_filtered},
+        {"frontier_item": fi("a", "acceleration", "m/s^2", "LT-2"), "candidates": a_filtered},
+    ]
+    tokens_filtered = estimate_round_tokens(round_data_filtered)
+
+    print(f"  unfiltered: m={len(m_unfiltered)}, a={len(a_unfiltered)} -> ~{tokens_unfiltered} tokens")
+    print(f"  filtered:   m={len(m_filtered)}, a={len(a_filtered)} -> ~{tokens_filtered} tokens")
+    print(f"  budget: {MAX_CANDIDATES_TOKENS_PER_ROUND}")
+
+    assert tokens_unfiltered > MAX_CANDIDATES_TOKENS_PER_ROUND, (
+        "sanity check: the unfiltered round should reproduce the original overflow"
+    )
+    assert tokens_filtered < MAX_CANDIDATES_TOKENS_PER_ROUND, (
+        "domain-filtered round should fit comfortably under budget"
+    )
+    print("  PASSED")
+
+
+def test_round_splits_on_token_overflow():
+    """
+    Without a domain hint (worst case), the m+a round after picking F=m*a
+    is large enough to exceed budget. Confirm resolve_frontier's safety
+    valve splits it into separate single-symbol calls instead of sending
+    one oversized batched call — this is the actual fix for the 413 crash,
+    independent of whether domain filtering also helped.
+    """
+    print("\n[test_round_splits_on_token_overflow]")
+    g = get_graph()
+    base_selector = make_selector({
+        "F": "laws_of_motion_newton_second_law",
+        "m": "general_density_definition",
+        "a": "kinematics_v2_u2_2as",
+    })
+    call_log = []
+    def tracking_selector(question, available, round_data, round_num=0):
+        call_log.append(len(round_data))
+        return base_selector(question, available, round_data, round_num)
+
+    target = fi("F", "force", "N", "MLT-2")
+    given = {
+        "rho": {"value": 8000, "unit": "kg/m^3", "name": "density", "dimension": "ML-3"},
+        "V":   {"value": 0.5,  "unit": "m^3",    "name": "volume",  "dimension": "L3"},
+        "u":   {"value": 0.0,  "unit": "m/s",    "name": "initial velocity", "dimension": "LT-1"},
+        "v":   {"value": 30.0, "unit": "m/s",    "name": "final velocity",   "dimension": "LT-1"},
+        "s":   {"value": 40.0, "unit": "m",      "name": "displacement",     "dimension": "L"},
+    }
+    # Deliberately no allowed_domains — forces the large candidate sets for
+    # m and a, so the safety valve (not domain filtering) is what's tested.
+    result = resolve_frontier(target, given, g, "test question", tracking_selector)
+
+    print(f"  round_data lengths per LLM call: {call_log}")
+    assert result.success, f"resolution should still succeed: {result.failure_reason}"
+    assert 2 not in call_log, (
+        "a 2-item round reached the LLM unsplit — the overflow safety valve "
+        "did not trigger when it should have"
+    )
+    assert call_log.count(1) >= 3, f"expected >=3 single-item calls, got {call_log}"
+    print("  PASSED")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # §8 step 3 — Frontier loop happy path
 # The original failing case: body with rho,V,u,v,s given; find F.
@@ -529,6 +653,10 @@ def run_all():
         test_candidates_symbol_F,
         test_candidates_visited_exclusion,
         test_candidates_conservation_law_excluded,
+        test_domain_filter_narrows_candidates,
+        test_domain_filter_fallback_when_empty,
+        test_domain_filter_fixes_real_overflow_scenario,
+        test_round_splits_on_token_overflow,
         test_frontier_happy_path,
         test_decision_log_populated,
         test_sympy_exact_fractions,

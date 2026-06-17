@@ -126,7 +126,7 @@ def test_backtrack_triggers_on_unflagged_failure():
         "conditions": [], "rag_text": "test fixture", "common_mistakes": [],
     }
 
-    def fake_parse(question):
+    def fake_parse(question, valid_domains=None):
         return {
             "given": {
                 "rho": {"value": 8000, "unit": "kg/m^3", "name": "density", "dimension": "ML-3"},
@@ -137,6 +137,7 @@ def test_backtrack_triggers_on_unflagged_failure():
             },
             "unknown": {"symbol": "F", "name": "net force", "unit": "N", "dimension": "MLT-2"},
             "implicit_constants": [],
+            "likely_domains": ["laws_of_motion", "kinematics"],
         }
 
     def fake_selector(question, available, round_data, round_num=0):
@@ -164,8 +165,8 @@ def test_backtrack_triggers_on_unflagged_failure():
         return results
 
     orig_candidates = GraphIndex.candidates_for_quantity
-    def patched_candidates(self, needed_symbol, needed_name, needed_dimension, visited_eqs):
-        real = orig_candidates(self, needed_symbol, needed_name, needed_dimension, visited_eqs)
+    def patched_candidates(self, needed_symbol, needed_name, needed_dimension, visited_eqs, allowed_domains=None):
+        real = orig_candidates(self, needed_symbol, needed_name, needed_dimension, visited_eqs, allowed_domains)
         if needed_symbol == "F" and "synthetic_bad_force_eq" not in visited_eqs:
             return [WRONG_EQ] + real
         return real

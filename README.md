@@ -128,6 +128,49 @@ genuine conceptual choices and belong to the LLM.
 
 ---
 
+## Keeping a single round's prompt within the model's token limit
+
+In production, a real run hit a Groq 413 (`Request too large... limit
+6000, requested 8202`) on `llama-3.1-8b-instant`. Root cause: after
+picking F=m·a, the next round needs to resolve `m` and `a` together —
+and showing every dimension-compatible candidate for both (24 + 12 in
+this case, with full equation/description/conditions/variables metadata
+each) measured at ~8,500 tokens by itself, before the system prompt or
+question even get added. Three fixes, applied together:
+
+1. **Domain filtering, with a hard fallback.** Every node already carries
+   a `domain` field (`laws_of_motion`, `fluid_mechanics`, `electrostatics`,
+   ... 26 total). Stage 1 now also outputs `likely_domains` — 1–3 domains
+   it judges the question involves, at zero extra LLM calls since Stage 1
+   already reads the question. `candidates_for_quantity()` takes this as
+   an optional `allowed_domains` filter: if narrowing to those domains
+   leaves at least one candidate, use the narrowed set; if it would leave
+   zero (the domain guess missed), return the **full** set instead. That
+   fallback is the load-bearing safety property — domain filtering can
+   only reduce what's shown by default, never make something permanently
+   unreachable, which is what kept this from reintroducing the original
+   retrieval-can-silently-exclude-the-right-answer failure mode.
+   Measured effect on the actual failing case: m+a's candidates drop from
+   24+12 to 4+6, and the round's estimated cost drops from ~8,500 to
+   ~1,900 tokens.
+2. **Formatting trims, free on top of that.** Compact JSON instead of
+   pretty-printed (saves ~33% of bytes for zero information loss), and
+   each candidate's `variables` list drops symbols already shown in
+   "ALREADY KNOWN" instead of repeating them. `conditions` was considered
+   for trimming too but left at 2 entries — domain filtering already
+   provides enough headroom that cutting it wasn't necessary, and it's a
+   real (if probably small) signal for selection quality.
+3. **A split-on-overflow safety valve, as a backstop, not the main fix.**
+   `frontier_resolver` estimates a round's token cost before sending it
+   (`llm_interface.estimate_round_tokens`); if it's still over
+   `config.MAX_CANDIDATES_TOKENS_PER_ROUND` even after domain filtering,
+   the round is sent as separate sequential single-symbol calls instead
+   of one batched call. Costs a few extra calls only on the rare round
+   that needs it — guarantees no future combination of busy domains can
+   reproduce this crash.
+
+---
+
 ## LLM call budget per question (typical 2–4-equation problem)
 
 | Stage | Call | Model |
@@ -214,6 +257,10 @@ for a specific failure mode, not a general-purpose correctness guarantee.
 | `g` NOT force-injected for an unrelated domain (electrostatics) | ✓ |
 | Universal constants (c, G, ε₀...) correctly exclude `g` | ✓ |
 | Backtrack triggers on an unflagged (non-provisional) Stage 3 failure | ✓ |
+| Domain filter narrows candidates correctly | ✓ |
+| Domain filter falls back to full set when narrowing would empty it | ✓ |
+| Real production overflow scenario (m+a, ~8500 tok) fixed by domain filter | ✓ |
+| Oversized round splits into sequential single-symbol calls | ✓ |
 
 ---
 

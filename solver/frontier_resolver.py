@@ -151,6 +151,7 @@ def resolve_frontier(
     llm_round_fn,   # callable(question, available, round_data) → list[dict]
     max_rounds:     int = MAX_CHAIN_DEPTH,
     excluded_eqs:   set[str] | None = None,  # for backtracking: ban specific equations
+    allowed_domains: set[str] | None = None,  # narrow candidates by domain (with fallback)
 ) -> ResolutionResult:
     """
     Iteratively resolves the target quantity by:
@@ -169,7 +170,19 @@ def resolve_frontier(
            reason: str,
            conditions_concern: str | None,
            deferred: bool}
+
+    allowed_domains: optional hint (e.g. {'laws_of_motion', 'kinematics'})
+    used to shrink the candidate set shown to the LLM. Safe by construction:
+    graph_index.candidates_for_quantity() falls back to the full candidate
+    set whenever the domain filter would otherwise leave zero options, so
+    this can only reduce prompt size — it never makes an equation
+    permanently unreachable.
     """
+    # Lazy import — avoids a circular import (llm_interface imports
+    # FrontierItem from this module), and this is only needed at call time.
+    from solver.llm_interface import estimate_round_tokens
+    from config import MAX_CANDIDATES_TOKENS_PER_ROUND
+
     if excluded_eqs is None:
         excluded_eqs = set()
 
@@ -192,16 +205,33 @@ def resolve_frontier(
                 needed_name=fi.name,
                 needed_dimension=fi.dimension,
                 visited_eqs=visited_eqs,
+                allowed_domains=allowed_domains,
             )
             round_data.append({"frontier_item": fi, "candidates": candidates})
 
-        # ── Step 2: Batched LLM call ──────────────────────────────────────────
-        selections = llm_round_fn(
-            question=question,
-            available=available,
-            round_data=round_data,
-            round_num=round_num,
-        )
+        # ── Step 2: Batched LLM call — split if this round risks oversize ─────
+        # Real-world failure mode this guards against: two symbols with large
+        # candidate sets (e.g. m+a both needed after picking F=m*a) landing in
+        # the same round can push a single request well past the model's
+        # per-request token limit (confirmed: one such round measured ~8500
+        # tokens against a 6000 cap). Domain filtering above handles the
+        # common case; this is the backstop for whatever it doesn't catch.
+        if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
+            selections = []
+            for rd in round_data:
+                selections.extend(llm_round_fn(
+                    question=question,
+                    available=available,
+                    round_data=[rd],
+                    round_num=round_num,
+                ))
+        else:
+            selections = llm_round_fn(
+                question=question,
+                available=available,
+                round_data=round_data,
+                round_num=round_num,
+            )
 
         # ── Step 3: Apply picks, build next frontier ──────────────────────────
         new_frontier: list[FrontierItem] = []

@@ -60,6 +60,15 @@ class GraphIndex:
             self.adjacency[e["from"]].add(e["to"])
             self.adjacency[e["to"]].add(e["from"])
 
+        # ── Domain taxonomy ────────────────────────────────────────────────────
+        # All distinct `domain` values present in the graph, e.g. 'kinematics',
+        # 'fluid_mechanics', 'electrostatics'. Used to (a) give Stage 1 a fixed
+        # taxonomy to pick from rather than freeform text, and (b) filter
+        # candidates_for_quantity() down to the domains relevant to a question.
+        self.all_domains: set[str] = {
+            n.get("domain") for n in self.nodes if n.get("domain")
+        }
+
         print(
             f"[GraphIndex] Loaded {len(self.nodes)} equations, "
             f"{len(self.edges)} edges"
@@ -100,6 +109,7 @@ class GraphIndex:
         needed_name: str,
         needed_dimension: str,
         visited_eqs: set[str],
+        allowed_domains: set[str] | None = None,
     ) -> list[dict]:
         """
         Generate candidate equations for a needed quantity.
@@ -109,7 +119,7 @@ class GraphIndex:
         2. Equations that contain NON_SOLVABLE_SYMBOLS (conservation-law forms
            like 'P*V^gamma = constant' that cannot be rearranged for a value).
         3. Equations where the variable matching needed_symbol has an
-           INCOMPATIBLE dimension to needed_dimension.  This is the deterministic
+           INCOMPATIBLE dimension to needed_dimension. This is the deterministic
            symbol-collision guardrail: it prevents e.g. an optics 'm' (fringe
            order, dimensionless) from appearing as a candidate when we need
            mass 'm' (dimension M).
@@ -117,6 +127,16 @@ class GraphIndex:
         Note: same-dimension-different-name cases (e.g. 'radius' vs 'separation
         distance', both dimension L) are NOT filtered here — they reach the LLM
         as legitimate candidates for conceptual disambiguation.
+
+        `allowed_domains`, if given, narrows the result to equations whose
+        `domain` field is in that set (e.g. {'laws_of_motion', 'kinematics'}
+        for a dynamics problem) — purely to reduce how many candidates get
+        sent to the LLM, not to change correctness. CRITICAL SAFETY PROPERTY:
+        if narrowing by domain would leave ZERO candidates (the domain guess
+        was wrong or incomplete), this returns the full dimension-filtered
+        set instead, never an empty one. Nothing the LLM would conceptually
+        need ever becomes permanently unreachable — domain filtering only
+        changes what's shown by default, never what's reachable.
 
         Returns: list of equation nodes, unordered (LLM chooses among them).
         """
@@ -136,6 +156,13 @@ class GraphIndex:
             if not _dimensions_compatible(stored_dim, needed_dimension):
                 continue
             candidates.append(node)
+
+        if allowed_domains:
+            narrowed = [c for c in candidates if c.get("domain") in allowed_domains]
+            if narrowed:
+                return narrowed
+            # Fallback: domain guess didn't match anything for this quantity —
+            # return the full set rather than silently excluding everything.
         return candidates
 
     # ── Legacy helpers ────────────────────────────────────────────────────────

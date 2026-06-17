@@ -55,13 +55,17 @@ class PhysicsSolver:
         # Stage 1 — Parse
         # ═══════════════════════════════════════════════════════════════════════
         try:
-            parsed = parse_question(question)
+            parsed = parse_question(question, valid_domains=self.graph.all_domains)
         except Exception as e:
             return self._error(question, f"Stage 1 parse failed: {e}", t0)
 
         given_meta  = parsed.get("given", {})   # {sym: {value,unit,name,dimension}}
         unknown     = parsed.get("unknown", {})  # {symbol,name,unit,dimension}
         target_sym  = unknown.get("symbol", "")
+        # Hint only — candidates_for_quantity() falls back to the full set
+        # whenever this would otherwise leave zero candidates for a quantity,
+        # so a wrong/incomplete guess here costs prompt size, not correctness.
+        allowed_domains = set(parsed.get("likely_domains", [])) or None
 
         if not target_sym:
             return self._error(question, "Could not identify the unknown variable.", t0)
@@ -121,12 +125,13 @@ class PhysicsSolver:
 
         for attempt in range(1, MAX_BACKTRACK_ATTEMPTS + 1):
             resolution = resolve_frontier(
-                target        = target,
-                given         = given_full,
-                graph_index   = self.graph,
-                question      = question,
-                llm_round_fn  = call_round_selector,
-                excluded_eqs  = excluded_eqs,
+                target          = target,
+                given           = given_full,
+                graph_index     = self.graph,
+                question        = question,
+                llm_round_fn    = call_round_selector,
+                excluded_eqs    = excluded_eqs,
+                allowed_domains = allowed_domains,
             )
             for entry in resolution.decision_log:
                 full_decision_log.append({**entry, "attempt": attempt})
