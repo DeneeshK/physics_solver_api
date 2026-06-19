@@ -257,6 +257,9 @@ for a specific failure mode, not a general-purpose correctness guarantee.
 | `g` NOT force-injected for an unrelated domain (electrostatics) | ✓ |
 | Universal constants (c, G, ε₀...) correctly exclude `g` | ✓ |
 | Backtrack triggers on an unflagged (non-provisional) Stage 3 failure | ✓ |
+| Already-targeted symbol never re-prompted across rounds (confirmed: reverting the fix reproduces the exact live-crash failure shape) | ✓ |
+| Dimension matching is format-independent (spaces, carets, case, factor order) | ✓ |
+| Sign correctly preserved through Stage 3 for signed quantities (e.g. deceleration) | ✓ |
 | Domain filter narrows candidates correctly | ✓ |
 | Domain filter falls back to full set when narrowing would empty it | ✓ |
 | Real production overflow scenario (m+a, ~8500 tok) fixed by domain filter | ✓ |
@@ -312,6 +315,82 @@ stress_test.md` has 5 questions sharing the same structural pattern
 (heavy setup about one quantity, explicit ask for another at the end)
 for live validation — run each a couple of times, since temperature=0.1
 still allows some sampling variance.
+
+---
+
+## Three more bugs found by actually running the stress test
+
+The stress test surfaced real things, which is the point of it. In order
+of severity:
+
+**A genuinely serious one: a target symbol could get silently
+re-targeted across rounds, cascading into a runaway resolution.** The
+free-fall question (#5) spiraled through 6 rounds, 150+ seconds, and
+eventually started grabbing wildly wrong-domain equations (orbital speed
+for a basic kinematics problem) before failing outright. Root cause:
+`frontier_resolver`'s "what new quantities does this equation introduce"
+check only excluded symbols already in `available` (Stage-1 givens) or
+`seen_in_frontier` (reset every round) — nothing tracked "already chosen
+as a target in an earlier round." So when round 0 resolved `v` via
+`v=u-g*t`, and a later round picked `v**2=u**2+2*a*s` for `s`/`a` (which
+also lists `v` as one of its variables, since that's an inherently
+4-variable equation), `v` got silently treated as a brand-new unknown
+needing its own equation — except its only real equation was already
+visited, so the LLM kept reaching for increasingly wrong substitutes.
+Fixed with a cumulative `already_targeted` set, checked alongside
+`available`/`seen_in_frontier`. Verified two ways: a minimal stub-graph
+test confirms a symbol is never asked about twice (and — checked by
+literally reverting the fix and re-running — the exact same test fails
+with "no candidate equations found," the identical failure shape as the
+live crash), and a full regression pass confirms no behavior changed for
+any acyclic case.
+
+**A structural fragility: dimension matching was plain string equality.**
+The power-dissipation question (#3) failed outright — "No candidate
+equations found for 'P'" — even though `current_electricity_power_electric`
+(P=V·I) exists and is dimensionally correct. The graph stores power's
+dimension as `"ML2T-3 or ML-1T-2"` (it collides with pressure); the
+compatibility check split on `" or "` and then did exact string equality
+on each side. "Power" wasn't anchored with a worked example in Stage 1's
+prompt the way force/mass/velocity were, so nothing constrained its
+output format — and confirmed directly: `"M L^2 T^-3"`, `"ML^2T^-3"`, and
+lowercase all fail to match `"ML2T-3"` under plain string comparison,
+despite being the identical dimension. Replaced with a regex-based
+normalizer (`_normalize_dimension`) that parses into a canonical,
+order- and format-independent representation before comparing — fixes
+this for power specifically and for any other not-yet-anchored
+dimension that might hit the same gap later. Also added power as an
+anchored example in the prompt, since it's free and directly addresses
+what actually triggered this.
+
+**A narration reliability issue, only partially closeable by prompting.**
+The deceleration question (#2) got the right final answer, but the
+explanation was internally contradictory: it re-derived the equations
+itself rather than just reading off the trace, flipped a sign in the
+process (`a=-2` in the trace, correctly verified by direct SymPy
+execution — narrated as `a=2`), then computed a wrong intermediate time
+value that didn't match the trace's actual result, before reporting the
+correct final answer anyway. The fix adds explicit instructions: quote
+the trace's substitution and result verbatim rather than re-deriving,
+and preserve sign explicitly. Worth being honest about the limit here —
+this is a known LLM tendency (wanting to "show its work" even when told
+not to, and conversational deceleration-as-positive-magnitude framing
+fighting the strict signed-value convention), and a prompt instruction
+mitigates but can't fully guarantee against it the way a deterministic
+check could. Separately, tests #1 and #4 both ended with a redundant
+"this matches what the question asked" sentence, a side effect of the
+mismatch-detection rule from the last round of fixes firing reflexively
+even when nothing was actually wrong — narrowed so it only fires on a
+genuine mismatch.
+
+If sign/re-derivation issues persist after this, the more aggressive
+(and more invasive) fix would be template-driven narration for the
+arithmetic portions specifically — interpolate the trace's pre-formatted
+substitution strings directly rather than letting the LLM restate them
+in its own words — while still letting it free-form the physics
+reasoning around them. Not implemented here; it's a real architecture
+change, not a prompt tweak, and worth deciding on deliberately rather
+than reaching for it reflexively.
 
 ---
 

@@ -86,30 +86,57 @@ Respond ONLY with valid JSON in this EXACT format:
     "dimension": "<dimensional formula>"
   }},
   "implicit_constants": ["<symbol1>", "<symbol2>"],
-  "likely_domains": ["<domain1>", "<domain2>"]
+  "likely_domains": ["<domain1>", "<domain2>"],
+  "search_query": "<one sentence describing the unknown and the physical scenario, for equation retrieval>"
 }}
 
 Rules:
-- Convert all given values to SI units before outputting (km/h→m/s, g/cm³→kg/m³, etc.)
-- Use standard symbols: F=force, m=mass, a=acceleration, v=final velocity,
-  u=initial velocity, s=displacement, t=time, rho=density, V=volume,
-  g=gravitational acceleration, T=temperature/period, P=pressure/power,
-  E=energy/electric field, q=charge, I=current/moment of inertia/impulse,
-  r=radius/distance, h=height, n=refractive index, lambda=wavelength
-- Dimensional formulas: M=mass, L=length, T=time, A=current, K=temperature.
+
+UNIT CONVERSION
+- Convert all given values to SI units before outputting
+  (km/h→m/s, g/cm³→kg/m³, minutes→seconds, etc.)
+
+SYMBOLS
+- Use natural physics symbols (F, m, a, v, u, s, t, rho, V, g, T, P, E, q,
+  I, r, n, lambda, etc.). The downstream system will match against a graph
+  of equations, with dimension and meaning as the primary disambiguators.
+  Don't agonize over symbol choice — pick the most conventional one for the
+  scenario; the dimension filter handles ambiguity.
+
+- IMPORTANT: in a motion question, a "height" through which an object
+  moves IS a displacement. If the question says "raised to a height of 5m
+  and released", and asks for velocity, the 5m is the displacement of the
+  motion — represent it as s=5 (displacement), not h=5. Reserve h for
+  questions about static stored height (gravitational potential energy in
+  isolation, hydrostatic pressure at depth, a column of fluid) where the
+  height is a configuration, not a motion variable.
+
+- A "distance traveled" or "path length" in motion is also displacement s,
+  not d or x.
+
+DIMENSIONAL FORMULAS
+- M=mass, L=length, T=time, A=current, K=temperature, N=amount of substance.
   Examples: force=MLT-2, velocity=LT-1, acceleration=LT-2, mass=M,
-  density=ML-3, energy=ML2T-2, charge=AT, current=A, momentum=MLT-1
+  density=ML-3, energy=ML2T-2, power=ML2T-3, charge=AT, current=A,
+  momentum=MLT-1, resistance=ML2T-3A-2.
+- Use compact form (MLT-2), no spaces, no carets, no asterisks.
+
+IMPLICIT CONSTANTS
 - implicit_constants: list ONLY symbols from this catalog that the scenario
   implies WITHOUT the problem stating a numeric value:
 {_CONSTANTS_CATALOG_TEXT}
   Examples: "free fall" → ["g"], "in vacuum" with Coulomb → ["epsilon_0"],
   "universal gravitation" → ["G"]. Do NOT list constants whose value is
   already given explicitly in the problem.
+
+DOMAINS
 - likely_domains: list 1-3 domains, using EXACT spelling, from this set that
   the problem's physics involves: {domains_text}
   This is used only to reduce noise in a later step, never to exclude
   anything outright — but if you're unsure between two domains, include
   both rather than guessing narrowly.
+
+THE UNKNOWN
 - unknown: this is whatever the question is ULTIMATELY asking to find,
   calculate, or determine — usually signaled by explicit phrasing
   ("find X", "calculate X", "what is X", "determine X"), and that phrasing
@@ -123,6 +150,23 @@ Rules:
   velocities and displacement dominate the sentence, the explicit ask is
   for force (F), NOT acceleration. Acceleration is an intermediate
   quantity needed to get there, not the unknown.
+
+SEARCH QUERY
+- search_query: a single English sentence describing what the question
+  is asking for and the physical scenario, written for similarity search
+  against equation descriptions. Mention the unknown quantity by NAME (not
+  symbol), the key scenario words from the question, and the physics
+  category. Do NOT include numbers. Examples:
+    "find the final velocity of an object falling freely from a given
+     height under gravity"
+    "find the power dissipated in a resistor with given current and voltage"
+    "find the net force on a body that accelerates from one speed to
+     another over a known displacement"
+  The downstream retrieval will use this to find candidate equations whose
+  descriptions match the scenario, not just equations containing a matching
+  symbol.
+
+OUTPUT
 - Output ONLY the JSON object, nothing else.
 """
 
@@ -162,6 +206,7 @@ def parse_question(question: str, valid_domains: set[str] | None = None) -> dict
             }
 
     parsed.setdefault("likely_domains", [])
+    parsed.setdefault("search_query", "")
     return parsed
 
 
@@ -184,7 +229,7 @@ HAPPENING in this problem.
 1. READ the original question carefully — understand the physical scenario.
 2. For each needed quantity, ask:
    - Which candidate equation describes the physics of THIS problem?
-   - Does the equation's rag_text match what the scenario is about?
+   - Does the equation's description match what the scenario is about?
    - Do the equation's conditions hold for this scenario?
 3. DO NOT rank candidates by "how many variables are already known."
    An equation that is immediately solvable may still be the WRONG physics.
@@ -197,6 +242,26 @@ HAPPENING in this problem.
 5. If you believe a needed quantity will appear as a BYPRODUCT of an
    equation you're choosing for ANOTHER frontier item this round, say
    "defer" for it. Use this only when genuinely redundant.
+6. If NONE of the candidates physically fits — they're all wrong domain or
+   wrong physics for this scenario — say "decision": "none". Do not force
+   a pick. The system will surface this as an unresolved item and decide
+   what to do next. Picking a clearly-wrong equation is worse than admitting
+   no candidate fits.
+
+## How candidates were surfaced
+
+Each candidate has a "landing_source" field:
+  - "symbol": surfaced because it contains the needed symbol. Most reliable
+    structural signal; appears in v6 too.
+  - "semantic": surfaced because its description matched the question
+    scenario via vector search. Use this when the question's natural
+    vocabulary differs from the equation's stored symbols (e.g. the
+    question says "height" but the kinematic equation uses "displacement"
+    for the same physical thing — semantic landing catches this where
+    symbol matching can't).
+  - "both": surfaced by both routes. Strongest signal — but only a signal,
+    not a forced choice; still pick by physical fit.
+Use landing_source as context, not as a tie-breaker. The physics decides.
 
 ## Response format — ONLY valid JSON, no prose outside it
 
@@ -213,6 +278,7 @@ HAPPENING in this problem.
 }
 
 For deferred items: {"needed_symbol": "...", "decision": "defer", "reason": "..."}
+For no-fit items:   {"needed_symbol": "...", "decision": "none",  "reason": "..."}
 """
 
 
@@ -224,12 +290,15 @@ def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
     redundancy, not signal. The symbol being solved for is never in
     known_symbols by construction (it wouldn't be a frontier item otherwise),
     so it always survives this filter.
+
+    v7: surfaces `landing_source` (added by solver.landing.get_landing_candidates)
+    when present. The LLM reads it as context, not as a forced ranking.
     """
     rag = eq.get("rag_text", "")
     if len(rag) > 120:
         rag = rag[:117] + "..."
     known_symbols = known_symbols or set()
-    return {
+    out = {
         "id":           eq["id"],
         "equation":     eq["equation_str"],
         "description":  rag,
@@ -240,6 +309,12 @@ def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
             if sym not in known_symbols
         },
     }
+    # Surface landing_source only when explicitly tagged — round 0 with Chroma
+    # enabled adds it; symbol-only rounds 1+ don't, and we don't want to imply
+    # a landing route for those.
+    if eq.get("landing_source"):
+        out["landing_source"] = eq["landing_source"]
+    return out
 
 
 def estimate_round_tokens(round_data: list[dict]) -> int:
@@ -334,38 +409,63 @@ def call_round_selector(
             continue
         fi        = rd["frontier_item"]
         cands     = rd["candidates"]
-        deferred  = sel.get("decision") == "defer"
+        decision  = sel.get("decision")
+        deferred  = decision == "defer"
         chosen_eq = None
+        # v7: surface this through the result dict so frontier_resolver and
+        # decision_log can distinguish "LLM said none fit" from "LLM gave a
+        # bad ID we had to fall back from".
+        fallback_used = None
 
-        if not deferred:
+        if deferred:
+            pass
+        elif decision == "none":
+            # LLM explicitly says no candidate fits. Surface as no-pick so
+            # frontier_resolver fails this round cleanly (and backtracking
+            # can fire if applicable) — far better than picking a wrong
+            # equation that produces a confident wrong answer.
+            chosen_eq = None
+            fallback_used = "llm_decision_none"
+        else:
             chosen_id = sel.get("chosen_eq_id")
             chosen_eq = next((eq for eq in cands if eq["id"] == chosen_id), None)
-            if chosen_eq is None and cands:
-                # LLM gave wrong ID — fall back to first candidate and flag it
-                chosen_eq = cands[0]
+            if chosen_eq is None:
+                # v7 change: do NOT silently substitute the first candidate.
+                # That hid every "LLM hallucinated an ID" event behind what
+                # looked like an intentional pick. Surface it as no-pick;
+                # frontier_resolver will treat as unresolvable and downstream
+                # backtracking can fire.
+                fallback_used = (
+                    f"llm_invalid_id: got {chosen_id!r}, not in candidates "
+                    f"{[c['id'] for c in cands]}"
+                )
 
         result.append({
-            "frontier_item":     fi,
-            "chosen_eq":         chosen_eq,
-            "reason":            sel.get("reason", ""),
+            "frontier_item":      fi,
+            "chosen_eq":          chosen_eq,
+            "reason":             sel.get("reason", ""),
             "conditions_concern": sel.get("conditions_concern"),
-            "deferred":          deferred,
-            "_candidates":       cands,
+            "deferred":           deferred,
+            "_candidates":        cands,
+            "fallback_used":      fallback_used,
         })
 
-    # Make sure every frontier item has a result entry (LLM may have skipped some)
+    # Make sure every frontier item has a result entry. v6 silently picked
+    # the first candidate here; v7 marks the item as no-pick + records why,
+    # so the decision_log shows it and backtracking can react.
     answered_syms = {r["frontier_item"].symbol for r in result}
     for rd in round_data:
         fi = rd["frontier_item"]
         if fi.symbol not in answered_syms:
             cands = rd["candidates"]
             result.append({
-                "frontier_item":     fi,
-                "chosen_eq":         cands[0] if cands else None,
-                "reason":            "LLM did not address this item — using first candidate.",
+                "frontier_item":      fi,
+                "chosen_eq":          None,
+                "reason":             "LLM did not address this item — surfaced as no-pick.",
                 "conditions_concern": None,
-                "deferred":          False,
-                "_candidates":       cands,
+                "deferred":           False,
+                "_candidates":        cands,
+                "fallback_used":      "llm_omitted_item",
             })
 
     return result
@@ -389,16 +489,23 @@ STRICT RULES:
    that isn't already there — even if you can work out what it "should"
    be, even if the original question asks for something the trace doesn't
    cover. You are narrating a finished computation, not completing one.
-2. If final_answer's symbol doesn't seem to match what the original
-   question's final sentence is asking for, say so plainly as a one-line
-   note at the end — do NOT silently compute the missing piece yourself.
-3. For each equation used, explain WHY it is the right physical choice.
-4. Briefly mention any rejected alternatives (from decision_log) and why.
-5. Add the relevant physics law or principle justifying each step.
-6. Write for a Class 11/12 JEE/NEET student — clear English, no jargon overload.
-7. End with one sentence summarising the overall strategy.
-8. Write flowing numbered steps — no bullet points.
-9. Show the substitution exactly as given (exact fractions if present).
+2. Quote each step's "substituted" string and "result" value exactly as
+   given, including sign. Do NOT independently re-derive a step's algebra
+   to "show the work" — the substitution is already given to you; restate
+   it, don't recompute it. If a value is negative (e.g. deceleration,
+   opposing direction), keep it negative in your prose — never silently
+   restate it as positive.
+3. Only add a one-line note about final_answer's symbol if it genuinely
+   does NOT seem to match what the question's final sentence asks for.
+   If it does match (the normal case), say nothing about this at all —
+   do not add a routine "this confirms/matches what was asked" sentence;
+   that's noise when there's nothing to flag.
+4. For each equation used, explain WHY it is the right physical choice.
+5. Briefly mention any rejected alternatives (from decision_log) and why.
+6. Add the relevant physics law or principle justifying each step.
+7. Write for a Class 11/12 JEE/NEET student — clear English, no jargon overload.
+8. End with one sentence summarising the overall strategy.
+9. Write flowing numbered steps — no bullet points.
 """
 
 

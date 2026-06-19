@@ -21,7 +21,10 @@ from solver.llm_interface   import (
     parse_question, call_round_selector,
     narrate_from_trace, generate_distractors,
 )
-from config import PHYSICAL_CONSTANTS, UNIVERSAL_CONSTANTS, IMPLICIT_CONSTANTS_CATALOG
+from config import (
+    PHYSICAL_CONSTANTS, UNIVERSAL_CONSTANTS, IMPLICIT_CONSTANTS_CATALOG,
+    ENABLE_CHROMA_LANDING,
+)
 
 MAX_BACKTRACK_ATTEMPTS = 3  # Stage 3 failure -> exclude offending eq(s) -> retry Stage 2
 
@@ -47,6 +50,38 @@ class PhysicsSolver:
 
     def __init__(self, graph_index: GraphIndex):
         self.graph = graph_index
+        # v7: lazy-load Retriever. Modes:
+        #   "false"/"0"/"no"  → never load Chroma, force v6 behavior
+        #   "true"/"1"/"yes"  → require Chroma; raise if it can't load
+        #   "auto" (default)  → load if the index exists, otherwise None
+        # In every "None" case, frontier_resolver falls through to symbol-only
+        # candidate generation — exactly v6 behavior. This is the safety
+        # property: enabling Chroma can only add candidates, never remove.
+        self.retriever = self._init_retriever()
+
+    def _init_retriever(self):
+        mode = (ENABLE_CHROMA_LANDING or "auto").lower()
+        if mode in ("false", "0", "no", "off"):
+            print("[PhysicsSolver] ChromaDB landing disabled by config. "
+                  "Using symbol-only landing (v6 behavior).")
+            return None
+        # Defer heavy import to here so test environments that don't have
+        # sentence-transformers / chromadb installed can still import
+        # PhysicsSolver as long as they don't enable Chroma.
+        from solver.retrieval import Retriever
+        retriever = Retriever.try_load(self.graph)
+        if retriever is None and mode in ("true", "1", "yes", "on"):
+            raise RuntimeError(
+                "ENABLE_CHROMA_LANDING=true but the ChromaDB and/or BM25 "
+                "index could not be loaded. Run `python -m solver.ingest` "
+                "to build them, or set ENABLE_CHROMA_LANDING=false to "
+                "force v6 behavior."
+            )
+        if retriever is None:
+            print("[PhysicsSolver] ChromaDB index not found. "
+                  "Using symbol-only landing (v6 behavior). "
+                  "Run `python -m solver.ingest` to enable ChromaDB landing.")
+        return retriever
 
     def solve(self, question: str) -> SolverResponse:
         t0 = time.time()
@@ -62,6 +97,7 @@ class PhysicsSolver:
         given_meta  = parsed.get("given", {})   # {sym: {value,unit,name,dimension}}
         unknown     = parsed.get("unknown", {})  # {symbol,name,unit,dimension}
         target_sym  = unknown.get("symbol", "")
+        search_query = parsed.get("search_query", "")  # v7: for Chroma landing
         # Hint only — candidates_for_quantity() falls back to the full set
         # whenever this would otherwise leave zero candidates for a quantity,
         # so a wrong/incomplete guess here costs prompt size, not correctness.
@@ -132,6 +168,8 @@ class PhysicsSolver:
                 llm_round_fn    = call_round_selector,
                 excluded_eqs    = excluded_eqs,
                 allowed_domains = allowed_domains,
+                search_query    = search_query,
+                retriever       = self.retriever,
             )
             for entry in resolution.decision_log:
                 full_decision_log.append({**entry, "attempt": attempt})

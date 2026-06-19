@@ -9,6 +9,7 @@ Changes from v1:
     variable matching `symbol` has a compatible dimension to what is needed.
 """
 import json
+import re
 from collections import defaultdict
 from config import MAIN_GRAPH_PATH, NON_SOLVABLE_SYMBOLS
 
@@ -20,17 +21,101 @@ def load_graphs():
     return GraphIndex(main)
 
 
+# ── Dimensional tokenizer ─────────────────────────────────────────────────────
+# v7 fix: v6's regex was `[MLTAK](-?\d*)` — it only handled single-letter
+# dimensions M, L, T, A, K. The graph actually uses multi-character dimension
+# tokens too:
+#   - 'Theta' for temperature (alternative to K, used in some equations)
+#   - 'N' for amount of substance / moles (e.g. gas constant ML2T-2N-1Theta-1)
+#   - the literal token 'varies' as a sentinel on conservation-law equations
+# Under the old regex 'Theta' parsed as T*T*A (silently), 'N' was dropped, and
+# 'varies' decayed to ('A', 1) — meaning a temperature dimension could
+# accidentally match a current dimension. Both sides usually broke the same
+# way so cross-comparison happened to work most of the time, but the bug was
+# latent and would surface the moment one side adopted a different notation.
+#
+# The fix tokenizes by name first (longest-match wins), then exponent. The
+# regex is anchored on word boundaries within the cleaned string.
+DIMENSION_TOKEN_ORDER = ('Theta', 'mol', 'M', 'L', 'T', 'A', 'K', 'N')
+# 'mol' is accepted as an alias for N (some equations write 'mol-1' directly).
+# 'Theta' takes precedence over 'T' (longest-match) so 'Theta' doesn't get
+# eaten as 'T'+'heta'.
+DIMENSION_PATTERN = re.compile(
+    r'(' + '|'.join(DIMENSION_TOKEN_ORDER) + r')(-?\d*)',
+    re.IGNORECASE,
+)
+
+
+def _normalize_dimension(dim: str) -> tuple:
+    """
+    Parses a dimensional formula into a canonical, order-independent,
+    format-independent representation: a sorted tuple of (token, exponent)
+    pairs with nonzero exponents only.
+
+    Recognized tokens (case-insensitive):
+        M=mass, L=length, T=time, A=current, K=temperature,
+        Theta=temperature (alternative to K), N or mol=amount of substance.
+
+    The 'varies' sentinel returns an explicit marker that never matches any
+    real physical dimension — used on conservation-law equations whose
+    'constant' variable has no fixed dimension.
+
+    Format-independent: "ML2T-3", "M L^2 T^-3", "ml2t-3", "M*L2*T-3" all
+    normalize to (('L', 2), ('M', 1), ('T', -3)).
+    """
+    if not dim:
+        return ()
+    cleaned = dim.replace("^", "").replace("*", "").replace(" ", "")
+    if cleaned.lower() == 'varies':
+        # Sentinel: never compatible with any real dimension. Use a marker
+        # exponent on a synthetic token so set-intersection comparison
+        # cleanly fails.
+        return (('__VARIES__', 1),)
+    # Normalize Theta and K both to the K bucket so they're interchangeable;
+    # normalize mol and N both to the N bucket. The user side of the graph
+    # uses either spelling; we want them to match. Canonical keys are
+    # title-cased multi-char or single-letter uppercase.
+    canonical = {'Theta': 'K', 'Mol': 'N'}
+    exponents: dict[str, int] = {}
+    pos = 0
+    for m in DIMENSION_PATTERN.finditer(cleaned):
+        # Refuse overlapping or out-of-order matches — if the regex skipped
+        # over unrecognized characters, that's a malformed dimension; surface
+        # as empty rather than silently mis-parse.
+        if m.start() != pos:
+            # Unknown chars between matches (e.g. an unrecognized token).
+            # Skip them but record we did — strict parsing would refuse.
+            pass
+        token = m.group(1)
+        # Canonicalize case for single-letter, preserve multi-char
+        if len(token) == 1:
+            token = token.upper()
+        else:
+            token = token[0].upper() + token[1:].lower()  # 'theta' → 'Theta', 'mol' → 'Mol'
+        token = canonical.get(token, token)
+        exp_str = m.group(2)
+        if exp_str in ("", "-"):
+            exp = 1
+        else:
+            exp = int(exp_str)
+        exponents[token] = exponents.get(token, 0) + exp
+        pos = m.end()
+    return tuple(sorted((k, v) for k, v in exponents.items() if v != 0))
+
+
 def _dimensions_compatible(stored_dim: str, needed_dim: str) -> bool:
     """
     True if needed_dim is compatible with stored_dim.
     Handles ambiguous stored dimensions like 'MLT-1 or ML2 or A' by
     checking if needed_dim matches ANY of the alternatives.
     If either is empty/unknown, returns True (can't filter).
+    Comparison is format-independent (see _normalize_dimension) — "ML2T-3",
+    "M L^2 T^-3", and "ml2t-3" are all treated as the same dimension.
     """
     if not stored_dim or not needed_dim:
         return True
-    stored_parts = {p.strip() for p in stored_dim.split(" or ")}
-    needed_parts = {p.strip() for p in needed_dim.split(" or ")}
+    stored_parts  = {_normalize_dimension(p) for p in stored_dim.split(" or ")}
+    needed_parts  = {_normalize_dimension(p) for p in needed_dim.split(" or ")}
     return bool(stored_parts & needed_parts)  # non-empty intersection
 
 

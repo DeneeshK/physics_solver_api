@@ -152,13 +152,18 @@ def resolve_frontier(
     max_rounds:     int = MAX_CHAIN_DEPTH,
     excluded_eqs:   set[str] | None = None,  # for backtracking: ban specific equations
     allowed_domains: set[str] | None = None,  # narrow candidates by domain (with fallback)
+    search_query:   str = "",                 # v7: Stage 1 scenario sentence for ChromaDB
+    retriever       = None,                   # v7: optional Retriever; None → symbol-only landing
 ) -> ResolutionResult:
     """
     Iteratively resolves the target quantity by:
-      1. Building a frontier of "needed" quantities.
-      2. Asking the LLM (in one batched call per round) to pick equations.
-      3. Adding the picked equations' missing inputs to the next frontier.
-      4. Topological-sorting the chosen steps for execution order.
+      1. ROUND 0 — landing. Combine symbol-table lookup (v6 behavior) with
+         optional ChromaDB semantic lookup (new in v7) to surface candidates
+         for the target unknown. The LLM picks one based on physical fit.
+      2. ROUND 1+ — expansion. For each chosen equation's missing inputs,
+         look them up by symbol from the graph (deterministic, no ChromaDB),
+         dimension-filtered. The LLM picks one per missing input.
+      3. Topologically sort the chosen steps for execution order.
 
     llm_round_fn signature:
         fn(question: str,
@@ -169,53 +174,69 @@ def resolve_frontier(
            chosen_eq: dict | None,
            reason: str,
            conditions_concern: str | None,
-           deferred: bool}
+           deferred: bool,
+           fallback_used: str | None}
 
     allowed_domains: optional hint (e.g. {'laws_of_motion', 'kinematics'})
     used to shrink the candidate set shown to the LLM. Safe by construction:
     graph_index.candidates_for_quantity() falls back to the full candidate
-    set whenever the domain filter would otherwise leave zero options, so
-    this can only reduce prompt size — it never makes an equation
-    permanently unreachable.
+    set whenever the domain filter would otherwise leave zero options.
+
+    search_query / retriever: v7 ChromaDB landing. If retriever is None or
+    search_query is empty, round 0 falls back to symbol-only (v6 behavior).
     """
-    # Lazy import — avoids a circular import (llm_interface imports
-    # FrontierItem from this module), and this is only needed at call time.
+    # Lazy imports — avoids circular import (llm_interface imports
+    # FrontierItem from this module), and lets the module be imported
+    # cheaply in test contexts that don't exercise these paths.
     from solver.llm_interface import estimate_round_tokens
-    from config import MAX_CANDIDATES_TOKENS_PER_ROUND
+    from solver.landing       import get_landing_candidates
+    from config               import MAX_CANDIDATES_TOKENS_PER_ROUND
 
     if excluded_eqs is None:
         excluded_eqs = set()
 
     # State
-    available: dict[str, dict] = dict(given)   # symbol → {value,unit,name,dimension}
+    available: dict[str, dict] = dict(given)
     frontier:  list[FrontierItem] = [target]
     visited_eqs: set[str] = set(excluded_eqs)
     chosen_steps: list[ResolvedStep] = []
     decision_log: list[dict] = []
+    already_targeted: set[str] = set()
 
     for round_num in range(max_rounds):
         if not frontier:
             break
 
         # ── Step 1: Generate candidates for each frontier item ────────────────
+        # Round 0 (initial landing) uses the unified landing layer: symbol
+        # candidates UNIONED with semantic candidates from ChromaDB (if
+        # available). Rounds 1+ (input expansion) use symbol-only lookup
+        # because we're chasing specific variables in already-chosen
+        # equations — semantic search wouldn't add anything reliable there.
         round_data = []
         for fi in frontier:
-            candidates = graph_index.candidates_for_quantity(
-                needed_symbol=fi.symbol,
-                needed_name=fi.name,
-                needed_dimension=fi.dimension,
-                visited_eqs=visited_eqs,
-                allowed_domains=allowed_domains,
-            )
+            if round_num == 0:
+                candidates = get_landing_candidates(
+                    graph_index      = graph_index,
+                    target_symbol    = fi.symbol,
+                    target_name      = fi.name,
+                    target_dimension = fi.dimension,
+                    search_query     = search_query,
+                    visited_eqs      = visited_eqs,
+                    allowed_domains  = allowed_domains,
+                    retriever        = retriever,
+                )
+            else:
+                candidates = graph_index.candidates_for_quantity(
+                    needed_symbol    = fi.symbol,
+                    needed_name      = fi.name,
+                    needed_dimension = fi.dimension,
+                    visited_eqs      = visited_eqs,
+                    allowed_domains  = allowed_domains,
+                )
             round_data.append({"frontier_item": fi, "candidates": candidates})
 
         # ── Step 2: Batched LLM call — split if this round risks oversize ─────
-        # Real-world failure mode this guards against: two symbols with large
-        # candidate sets (e.g. m+a both needed after picking F=m*a) landing in
-        # the same round can push a single request well past the model's
-        # per-request token limit (confirmed: one such round measured ~8500
-        # tokens against a 6000 cap). Domain filtering above handles the
-        # common case; this is the backstop for whatever it doesn't catch.
         if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
             selections = []
             for rd in round_data:
@@ -235,28 +256,77 @@ def resolve_frontier(
 
         # ── Step 3: Apply picks, build next frontier ──────────────────────────
         new_frontier: list[FrontierItem] = []
-        seen_in_frontier: set[str] = set()   # avoid duplicate frontier items
+        seen_in_frontier: set[str] = set()
+
+        already_targeted |= {
+            sel["frontier_item"].symbol for sel in selections
+            if not sel.get("deferred", False) and sel.get("chosen_eq") is not None
+        }
 
         for sel in selections:
             fi: FrontierItem = sel["frontier_item"]
+            # v7: pull the candidate list this LLM call actually saw, for
+            # decision_log. Lets Stage 4 honestly narrate rejected alternatives
+            # and lets debugging trace what was visible vs. what was picked.
+            candidates_shown = sel.get("_candidates", [])
 
             if sel.get("deferred", False):
-                # LLM says this quantity will be supplied as a byproduct of
-                # another equation chosen this round — keep in next frontier
                 if fi.symbol not in seen_in_frontier:
                     new_frontier.append(fi)
                     seen_in_frontier.add(fi.symbol)
+                # Still log the deferral so Stage 4 can see why this round
+                # didn't directly resolve this symbol.
+                decision_log.append({
+                    "round":              round_num,
+                    "solving_for":        fi.symbol,
+                    "solving_for_name":   fi.name,
+                    "chosen_eq_id":       None,
+                    "equation_str":       None,
+                    "reason":             sel.get("reason", "deferred"),
+                    "conditions_concern": None,
+                    "fallback_used":      sel.get("fallback_used"),
+                    "n_candidates":       len(candidates_shown),
+                    "candidates_shown": [
+                        {"id": c["id"], "equation_str": c["equation_str"],
+                         "landing_source": c.get("landing_source")}
+                        for c in candidates_shown
+                    ],
+                    "decision":           "defer",
+                })
                 continue
 
             eq: dict = sel.get("chosen_eq")
             if eq is None:
-                # No candidate was available; mark unresolvable
+                # No equation was picked — either no candidates at all, or
+                # the LLM said "none fits". Log what the LLM saw, then bail.
+                fb = sel.get("fallback_used") or ""
+                reason_for_failure = (
+                    f"No candidate equations found for '{fi.symbol}' "
+                    f"({fi.name}) in round {round_num}."
+                    if not candidates_shown else
+                    f"LLM rejected all {len(candidates_shown)} candidate(s) "
+                    f"for '{fi.symbol}' in round {round_num} ({fb or 'no-fit'})."
+                )
+                decision_log.append({
+                    "round":              round_num,
+                    "solving_for":        fi.symbol,
+                    "solving_for_name":   fi.name,
+                    "chosen_eq_id":       None,
+                    "equation_str":       None,
+                    "reason":             sel.get("reason", reason_for_failure),
+                    "conditions_concern": None,
+                    "fallback_used":      sel.get("fallback_used"),
+                    "n_candidates":       len(candidates_shown),
+                    "candidates_shown": [
+                        {"id": c["id"], "equation_str": c["equation_str"],
+                         "landing_source": c.get("landing_source")}
+                        for c in candidates_shown
+                    ],
+                    "decision":           "none",
+                })
                 return ResolutionResult(
                     plan=[], final_symbol=target.symbol, success=False,
-                    failure_reason=(
-                        f"No candidate equations found for '{fi.symbol}' "
-                        f"({fi.name}) in round {round_num}."
-                    ),
+                    failure_reason=reason_for_failure,
                     decision_log=decision_log,
                     status="UNVERIFIED",
                 )
@@ -289,6 +359,8 @@ def resolve_frontier(
                     continue
                 if sym in seen_in_frontier:
                     continue
+                if sym in already_targeted:
+                    continue
                 new_fi = FrontierItem(
                     symbol=sym,
                     name=meta.get("name", sym),
@@ -299,21 +371,28 @@ def resolve_frontier(
                 new_frontier.append(new_fi)
                 seen_in_frontier.add(sym)
 
-            # Decision log entry
+            # Decision log entry — now includes everything the LLM saw,
+            # not just what it picked.
             decision_log.append({
-                "round":             round_num,
-                "solving_for":       fi.symbol,
-                "solving_for_name":  fi.name,
-                "chosen_eq_id":      eq["id"],
-                "equation_str":      eq["equation_str"],
-                "reason":            sel.get("reason", ""),
+                "round":              round_num,
+                "solving_for":        fi.symbol,
+                "solving_for_name":   fi.name,
+                "chosen_eq_id":       eq["id"],
+                "equation_str":       eq["equation_str"],
+                "reason":             sel.get("reason", ""),
                 "conditions_concern": sel.get("conditions_concern"),
-                "n_candidates":      len(sel.get("_candidates", [])),
+                "fallback_used":      sel.get("fallback_used"),
+                "n_candidates":       len(candidates_shown),
+                "candidates_shown": [
+                    {"id": c["id"], "equation_str": c["equation_str"],
+                     "landing_source": c.get("landing_source")}
+                    for c in candidates_shown
+                ],
+                "decision":           "pick",
             })
 
         frontier = new_frontier
 
-    # If frontier still has items, we couldn't resolve everything
     if frontier:
         unresolved = [f"{fi.symbol} ({fi.name})" for fi in frontier]
         return ResolutionResult(
@@ -323,7 +402,6 @@ def resolve_frontier(
             status="UNVERIFIED",
         )
 
-    # ── Step 4: Topological sort ──────────────────────────────────────────────
     given_syms = set(given.keys())
     sorted_steps, cyclic = _topological_sort(chosen_steps, given_syms)
     plan = _merge_cycles(sorted_steps, cyclic)

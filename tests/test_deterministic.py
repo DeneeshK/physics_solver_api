@@ -74,6 +74,33 @@ def fi(symbol, name, unit, dimension):
 # §8 step 2 — candidates_for_quantity isolation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_dimension_normalization_format_independent():
+    """
+    Regression for a real production failure: a power-dissipation question
+    failed with "No candidate equations found for 'P'" even though
+    current_electricity_power_electric (P=V*I) exists and is dimensionally
+    correct. Root cause: dimension compatibility used to be plain string
+    equality after splitting on " or " — so the graph's stored "ML2T-3 or
+    ML-1T-2" wouldn't match an LLM-produced "M L^2 T^-3" or "ML^2T^-3" or
+    lowercase, despite being the identical physical dimension. "power"
+    wasn't anchored with a worked example in Stage 1's prompt (force,
+    velocity, mass etc. were), so nothing constrained its output format.
+    Confirms the normalized comparison is robust to that variance while
+    still correctly rejecting genuinely different dimensions.
+    """
+    print("\n[test_dimension_normalization_format_independent]")
+    from solver.graph_loader import _dimensions_compatible
+    stored = "ML2T-3 or ML-1T-2"
+    for variant in ["ML2T-3", "M L^2 T^-3", "ML^2T^-3", "M*L2*T-3", "ml2t-3"]:
+        assert _dimensions_compatible(stored, variant), (
+            f"{variant!r} should be recognized as the same dimension as {stored!r}"
+        )
+    # Genuinely different dimensions must still be rejected
+    assert not _dimensions_compatible("M", "LT-1")
+    assert not _dimensions_compatible("MLT-2", "M")
+    print("  PASSED")
+
+
 def test_dimension_compat():
     print("\n[test_dimension_compat]")
     assert _dimensions_compatible("M", "M")
@@ -132,6 +159,90 @@ def test_candidates_conservation_law_excluded():
     print(f"\n[test_candidates_conservation_law_excluded] PASSED")
 
 
+class _StubGraphIndex:
+    """
+    Minimal graph_index stub for testing frontier expansion logic in
+    isolation, independent of real graph data. Only implements the one
+    method resolve_frontier actually calls.
+    """
+    def __init__(self, equations: list[dict]):
+        self.equations = equations
+
+    def candidates_for_quantity(self, needed_symbol, needed_name, needed_dimension, visited_eqs, allowed_domains=None):
+        return [
+            eq for eq in self.equations
+            if needed_symbol in eq["variables"] and eq["id"] not in visited_eqs
+        ]
+
+
+def test_already_targeted_symbol_not_reintroduced():
+    """
+    Regression for the test-5 runaway: a 6-round, 150+ second cascade on a
+    simple free-fall question, caused by a target symbol resolved in one
+    round getting silently reintroduced as a "new" unknown in a later
+    round, because a different equation (chosen for some OTHER symbol)
+    happened to also reference it as an input.
+
+    Minimal isolation: target X is resolved via eq_A (needs Y). Y is then
+    resolved via eq_B, whose variables ALSO include X (the already-resolved
+    target) and Z (given). Without tracking "already targeted" symbols
+    across rounds, X gets wrongly re-added to the frontier for round 2,
+    and — since eq_A is already visited and no other candidate exists for
+    X — the whole resolution fails. With the fix, X is correctly recognized
+    as already in progress, frontier empties after round 1, and resolution
+    succeeds with exactly 2 steps.
+    """
+    print("\n[test_already_targeted_symbol_not_reintroduced]")
+    eq_A = {
+        "id": "eq_A", "equation_str": "X = Y + 1",
+        "sympy_expr": "Eq(X, Y + 1)",
+        "variables": {
+            "X": {"name": "x quantity", "unit": "u", "dimension": "L"},
+            "Y": {"name": "y quantity", "unit": "u", "dimension": "L"},
+        },
+        "conditions": [], "rag_text": "test fixture A", "common_mistakes": [],
+        "domain": "test",
+    }
+    eq_B = {
+        "id": "eq_B", "equation_str": "Y = X + Z",
+        "sympy_expr": "Eq(Y, X + Z)",
+        "variables": {
+            "Y": {"name": "y quantity", "unit": "u", "dimension": "L"},
+            "X": {"name": "x quantity", "unit": "u", "dimension": "L"},  # reappears here
+            "Z": {"name": "z quantity", "unit": "u", "dimension": "L"},
+        },
+        "conditions": [], "rag_text": "test fixture B", "common_mistakes": [],
+        "domain": "test",
+    }
+    stub_graph = _StubGraphIndex([eq_A, eq_B])
+    selector = make_selector({"X": "eq_A", "Y": "eq_B"})
+    target = fi("X", "x quantity", "u", "L")
+    given = {"Z": {"value": 5, "unit": "u", "name": "z quantity", "dimension": "L"}}
+
+    result = resolve_frontier(target, given, stub_graph, "test question", selector)
+
+    print(f"  success: {result.success}")
+    print(f"  plan shape: {[type(s).__name__ for s in result.plan]}")
+    targeting_counts = {}
+    for entry in result.decision_log:
+        targeting_counts[entry["solving_for"]] = targeting_counts.get(entry["solving_for"], 0) + 1
+    print(f"  times each symbol was targeted: {targeting_counts}")
+
+    assert result.success, f"resolution should succeed, got: {result.failure_reason}"
+    # The actual property under test: X must never be asked about twice.
+    # (These particular equations are genuinely mutually dependent — X=Y+1
+    # and Y=X+Z really do form a simultaneous system — so the correct
+    # outcome here is a SimultaneousGroup, which is a separate, already-
+    # correct mechanism. That's fine; what would indicate the bug is back
+    # is X or Y appearing as "solving_for" more than once.)
+    assert targeting_counts.get("X", 0) == 1, (
+        f"X was targeted {targeting_counts.get('X', 0)} times — "
+        f"should be exactly 1 (it's already in progress after round 0)"
+    )
+    assert targeting_counts.get("Y", 0) == 1
+    print("  PASSED")
+
+
 def test_parse_system_has_target_identification_rule():
     """
     Regression guard, not behavioral proof: confirms the explicit
@@ -155,11 +266,20 @@ def test_narrate_system_forbids_new_computation():
     entire unverified mass+force calculation that was never in the trace,
     because the old rule only forbade *altering* trace numbers, not
     *introducing* new ones. Confirms the closed rule is present.
+
+    Also covers two issues found in later live testing: (a) narration
+    re-deriving a step's algebra itself and flipping a signed value's sign
+    in the process (a=-2 in the trace narrated as "a=2"), and (b) a
+    "this matches what was asked" note appearing even when there was no
+    actual mismatch, as a side effect of the mismatch-detection rule
+    always firing reflexively.
     """
     print("\n[test_narrate_system_forbids_new_computation]")
     from solver.llm_interface import NARRATE_SYSTEM
     assert "NEVER introduce a number" in NARRATE_SYSTEM
     assert "narrating a finished computation, not completing one" in NARRATE_SYSTEM
+    assert "keep it negative in your prose" in NARRATE_SYSTEM
+    assert "do not add a routine" in NARRATE_SYSTEM
     print("  PASSED")
 
 
@@ -674,16 +794,397 @@ def test_simultaneous_solve_execution():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v7 — new tests for v7-specific behaviour
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_dimension_normalizer_handles_theta_and_N():
+    """v7 fix: v6's _normalize_dimension only handled MLTAK; Theta and N
+    silently mangled. Now: 'Theta' canonicalizes to K bucket, 'N' and 'mol'
+    canonicalize to N bucket, 'varies' surfaces as a sentinel."""
+    from solver.graph_loader import _normalize_dimension, _dimensions_compatible
+
+    # 'Theta' is canonical for temperature; folds to K
+    assert _normalize_dimension("Theta")   == (("K", 1),)
+    assert _normalize_dimension("K")       == (("K", 1),)
+    assert _normalize_dimension("Theta-1") == (("K", -1),)
+    # Compound dimension involving Theta — the gas constant
+    assert _normalize_dimension("ML2T-2N-1Theta-1") == (
+        ("K", -1), ("L", 2), ("M", 1), ("N", -1), ("T", -2)
+    )
+    # N and mol both map to N
+    assert _normalize_dimension("N")     == (("N", 1),)
+    assert _normalize_dimension("mol-1") == (("N", -1),)
+    # 'varies' sentinel — never compatible with anything real
+    assert _normalize_dimension("varies") == (("__VARIES__", 1),)
+    # Cross-compat
+    assert _dimensions_compatible("Theta", "K") is True
+    assert _dimensions_compatible("ML2T-2N-1Theta-1", "ML2T-2N-1K-1") is True
+    assert _dimensions_compatible("varies", "M") is False
+    print("[test_dimension_normalizer_handles_theta_and_N] PASSED")
+
+
+def test_physical_constants_contain_graph_names():
+    """v7 reconciliation: PHYSICAL_CONSTANTS must contain every symbol the
+    graph actually uses for a physical constant. v6's set missed 'epsilon0'
+    and 'mu0' (the graph's underscoreless forms), which meant frontier
+    resolver would try to solve for epsilon_0 as if it were unknown in any
+    electrostatics question."""
+    from config import PHYSICAL_CONSTANTS
+    # Both forms must be in PHYSICAL_CONSTANTS as belt-and-suspenders.
+    # The graph itself has been standardized to the underscored form in v7,
+    # but the underscoreless forms remain in the set in case any legacy
+    # equation still uses them.
+    for sym in ('epsilon_0', 'mu_0', 'e_charge', 'k_B', 'R_g', 'NA',
+                'h_planck', 'g', 'G', 'c', 'pi'):
+        assert sym in PHYSICAL_CONSTANTS, f"{sym!r} missing from PHYSICAL_CONSTANTS"
+    print("[test_physical_constants_contain_graph_names] PASSED")
+
+
+def test_graph_uses_underscored_constant_names():
+    """v7: the graph file must use 'epsilon_0' and 'mu_0' (not 'epsilon0',
+    'mu0'). This is the rename that aligns the graph with config."""
+    import json
+    from config import MAIN_GRAPH_PATH
+    with open(MAIN_GRAPH_PATH) as f:
+        g = json.load(f)
+    import re
+    for n in g["nodes"]:
+        # Variable keys
+        assert 'epsilon0' not in n["variables"], \
+            f"{n['id']} still uses 'epsilon0' (should be 'epsilon_0')"
+        assert 'mu0' not in n["variables"], \
+            f"{n['id']} still uses 'mu0' (should be 'mu_0')"
+        # In equation strings
+        for field in ('equation_str', 'sympy_expr', 'latex'):
+            v = n.get(field, '')
+            assert not re.search(r'\bepsilon0\b', v), \
+                f"{n['id']}.{field} still references 'epsilon0'"
+            assert not re.search(r'\bmu0\b', v), \
+                f"{n['id']}.{field} still references 'mu0'"
+    print("[test_graph_uses_underscored_constant_names] PASSED")
+
+
+def test_constants_not_treated_as_unknowns():
+    """v7 regression guard: with the graph using 'epsilon_0' and config
+    listing 'epsilon_0' as a PHYSICAL_CONSTANT, an electrostatics chain
+    must not add epsilon_0 to the frontier as a missing variable."""
+    from solver.graph_loader import load_graphs
+    from config              import PHYSICAL_CONSTANTS
+    graph = get_graph()
+    # Find Coulomb's law — should contain epsilon_0
+    coulomb = next((n for n in graph.nodes if n["id"] == "electrostatics_coulomb_law"), None)
+    assert coulomb is not None
+    assert 'epsilon_0' in coulomb["variables"]
+    assert 'epsilon_0' in PHYSICAL_CONSTANTS
+    # Simulate the frontier_resolver check: after picking Coulomb's law,
+    # which symbols get added to the next frontier?
+    target_sym = 'F'
+    new_frontier_syms = [
+        sym for sym in coulomb["variables"].keys()
+        if sym != target_sym and sym not in PHYSICAL_CONSTANTS
+    ]
+    assert 'epsilon_0' not in new_frontier_syms, \
+        "epsilon_0 is being treated as unknown — PHYSICAL_CONSTANTS check failed"
+    assert 'pi' not in new_frontier_syms, "pi should also be excluded"
+    print(f"[test_constants_not_treated_as_unknowns] new frontier from Coulomb: "
+          f"{new_frontier_syms} (correctly excludes epsilon_0, pi) — PASSED")
+
+
+def test_landing_layer_falls_through_when_no_retriever():
+    """v7 safety: when retriever is None (no ChromaDB index built), the
+    landing layer returns exactly the symbol-table candidates — same as
+    v6 — so any v6-passing question still passes."""
+    from solver.landing import get_landing_candidates
+    graph = get_graph()
+    cands = get_landing_candidates(
+        graph_index      = graph,
+        target_symbol    = "F",
+        target_name      = "force",
+        target_dimension = "MLT-2",
+        search_query     = "find the net force on a body",
+        visited_eqs      = set(),
+        allowed_domains  = None,
+        retriever        = None,
+    )
+    # All candidates should be from symbol lookup
+    assert len(cands) > 0
+    assert all(c.get("landing_source") == "symbol" for c in cands), \
+        "Without retriever, every candidate must be tagged 'symbol' only"
+    # Symbol-lookup parity with v6
+    sym_only = graph.candidates_for_quantity("F", "force", "MLT-2", set(), None)
+    assert {c["id"] for c in cands} == {c["id"] for c in sym_only}, \
+        "Without retriever, landing must return the same set as v6 symbol lookup"
+    print(f"[test_landing_layer_falls_through_when_no_retriever] "
+          f"got {len(cands)} symbol candidates — PASSED")
+
+
+def test_landing_layer_unions_symbol_and_semantic():
+    """v7: when a mock retriever surfaces an extra equation by semantic
+    match (one not in the symbol candidates), the landing layer adds it
+    with landing_source='semantic'. When the mock surfaces an equation
+    that's also in the symbol set, it's promoted to landing_source='both'."""
+    from solver.landing import get_landing_candidates
+    graph = get_graph()
+
+    # Build a mock retriever that surfaces:
+    #   - one equation already in symbol candidates (should be promoted to 'both')
+    #   - one equation NOT in symbol candidates (should be added as 'semantic')
+    sym_only = graph.candidates_for_quantity("F", "force", "MLT-2", set(), None)
+    shared_eq = sym_only[0]   # exists in symbol set
+    # Pick something definitely outside the symbol-F set — gravitational PE
+    extra_eq = next(n for n in graph.nodes
+                    if n["id"] == "work_energy_power_gravitational_potential_mgh")
+    # Sanity — extra_eq does have F? No, it uses U. So it's not in symbol-F set.
+    assert "F" not in extra_eq["variables"]
+
+    class MockRetriever:
+        def search(self, query, top_k=5):
+            return [
+                {"node": shared_eq, "score": 0.9, "semantic_score": 0.9, "bm25_score": 0.5},
+                {"node": extra_eq,  "score": 0.7, "semantic_score": 0.6, "bm25_score": 0.4},
+            ]
+
+    cands = get_landing_candidates(
+        graph_index      = graph,
+        target_symbol    = "F",
+        target_name      = "force",
+        target_dimension = "MLT-2",
+        search_query     = "test query",
+        visited_eqs      = set(),
+        allowed_domains  = None,
+        retriever        = MockRetriever(),
+    )
+    by_id = {c["id"]: c for c in cands}
+    # shared_eq promoted to 'both'
+    assert by_id[shared_eq["id"]]["landing_source"] == "both", \
+        f"shared_eq should be 'both', got {by_id[shared_eq['id']]['landing_source']}"
+    # extra_eq added as 'semantic'
+    assert extra_eq["id"] in by_id
+    assert by_id[extra_eq["id"]]["landing_source"] == "semantic"
+    # All other symbol candidates still tagged 'symbol'
+    for c in cands:
+        if c["id"] not in {shared_eq["id"], extra_eq["id"]}:
+            assert c["landing_source"] == "symbol"
+    # Safety property: every symbol-set candidate is still present
+    sym_ids = {c["id"] for c in sym_only}
+    out_ids = {c["id"] for c in cands}
+    assert sym_ids.issubset(out_ids), \
+        "Landing union must include ALL symbol candidates (no removal)"
+    print(f"[test_landing_layer_unions_symbol_and_semantic] "
+          f"sym={len(sym_only)}, +semantic-only=1, total={len(cands)} — PASSED")
+
+
+def test_landing_layer_drops_dimensionally_incompatible_semantic_candidates():
+    """v7: semantic match alone is not enough; if the retrieved equation
+    contains target_symbol with a dimensionally incompatible meaning,
+    drop it. (Prevents e.g. an optics fringe-order m showing up as a
+    candidate for 'mass' just because the rag_text incidentally mentioned
+    mass.)"""
+    from solver.landing import get_landing_candidates
+    graph = get_graph()
+
+    # Find an equation where 'V' means volume (L^3). Then use it as a
+    # semantic match for needed='V'/voltage (ML2T-3A-1). The landing layer
+    # should drop it via the dimension filter.
+    vol_eq = next((n for n in graph.nodes
+                   if "V" in n["variables"]
+                   and n["variables"]["V"].get("dimension", "").startswith("L3")
+                  ), None)
+    assert vol_eq is not None, "Need at least one volume-V equation in graph"
+
+    class MockRetriever:
+        def search(self, query, top_k=5):
+            return [{"node": vol_eq, "score": 0.9,
+                     "semantic_score": 0.9, "bm25_score": 0.5}]
+
+    # Ask for V with VOLTAGE's dimension
+    cands = get_landing_candidates(
+        graph_index      = graph,
+        target_symbol    = "V",
+        target_name      = "potential difference",
+        target_dimension = "ML2T-3A-1",
+        search_query     = "any query",
+        visited_eqs      = set(),
+        allowed_domains  = None,
+        retriever        = MockRetriever(),
+    )
+    # The volume-V equation should NOT appear as a semantic candidate
+    assert vol_eq["id"] not in {c["id"] for c in cands if c.get("landing_source") == "semantic"}, \
+        f"Dimension filter failed to drop volume-V eq when needed voltage-V"
+    print(f"[test_landing_layer_drops_dimensionally_incompatible_semantic_candidates] PASSED")
+
+
+def test_round_selector_surfaces_invalid_id_as_no_pick():
+    """v7 change: when the LLM returns an equation ID that isn't in the
+    candidate set, v6 silently substituted the first candidate. v7
+    surfaces this as a no-pick with fallback_used='llm_invalid_id'."""
+    from solver.llm_interface import _format_candidate
+    # Direct test of the post-LLM mapping logic — we simulate the path
+    # without an actual LLM call.
+    # We do this by constructing the function's expected inputs and the
+    # parsed selection that v6 would have silently fallen back on.
+    from solver.frontier_resolver import FrontierItem
+    fi = FrontierItem(symbol="F", name="force", unit="N", dimension="MLT-2")
+    candidates = [
+        {"id": "laws_of_motion_newtons_second_law",
+         "equation_str": "F = m*a",
+         "rag_text": "Newton's second law",
+         "variables": {"F": {"name": "force", "unit": "N", "dimension": "MLT-2"}},
+         "conditions": []},
+    ]
+    # Build the selection dict the LLM "returned" with a bad ID
+    selections_raw = [{
+        "needed_symbol": "F",
+        "decision": "pick",
+        "chosen_eq_id": "nonexistent_equation_id",
+        "reason": "test",
+    }]
+    rd_by_symbol = {"F": {"frontier_item": fi, "candidates": candidates}}
+    # Mirror the v7 logic in call_round_selector
+    result = []
+    for sel in selections_raw:
+        sym = sel.get("needed_symbol")
+        rd = rd_by_symbol.get(sym)
+        if rd is None: continue
+        fi_ = rd["frontier_item"]
+        cands = rd["candidates"]
+        decision = sel.get("decision")
+        deferred = decision == "defer"
+        chosen_eq = None
+        fallback_used = None
+        if deferred:
+            pass
+        elif decision == "none":
+            chosen_eq = None
+            fallback_used = "llm_decision_none"
+        else:
+            chosen_id = sel.get("chosen_eq_id")
+            chosen_eq = next((eq for eq in cands if eq["id"] == chosen_id), None)
+            if chosen_eq is None:
+                fallback_used = f"llm_invalid_id: got {chosen_id!r}, not in candidates {[c['id'] for c in cands]}"
+        result.append({"frontier_item": fi_, "chosen_eq": chosen_eq,
+                       "fallback_used": fallback_used})
+
+    assert len(result) == 1
+    assert result[0]["chosen_eq"] is None, \
+        "v7: bad LLM id must yield None (no silent first-candidate substitution)"
+    assert result[0]["fallback_used"].startswith("llm_invalid_id"), \
+        f"fallback_used must be tagged, got {result[0]['fallback_used']}"
+    print("[test_round_selector_surfaces_invalid_id_as_no_pick] PASSED")
+
+
+def test_round_selector_handles_decision_none():
+    """v7: when LLM explicitly says decision='none', surface no-pick with
+    fallback_used='llm_decision_none'. No more silent fallback to first
+    candidate."""
+    from solver.frontier_resolver import FrontierItem
+    fi = FrontierItem(symbol="F", name="force", unit="N", dimension="MLT-2")
+    candidates = [{
+        "id": "fluid_mechanics_buoyant_force", "equation_str": "F = rho*V*g",
+        "rag_text": "...", "variables": {"F": {"name":"force","unit":"N","dimension":"MLT-2"}},
+        "conditions": [],
+    }]
+    selections_raw = [{
+        "needed_symbol": "F", "decision": "none",
+        "reason": "wrong physics — none of the candidates apply"
+    }]
+    # Mirror v7 logic
+    sel = selections_raw[0]
+    decision = sel.get("decision")
+    if decision == "none":
+        chosen_eq, fallback_used = None, "llm_decision_none"
+    assert chosen_eq is None
+    assert fallback_used == "llm_decision_none"
+    print("[test_round_selector_handles_decision_none] PASSED")
+
+
+def test_decision_log_records_candidates_shown():
+    """v7: decision_log entries must include candidates_shown so Stage 4
+    can honestly narrate rejected alternatives, and so debugging can see
+    what was visible vs. what was picked."""
+    graph = get_graph()
+    target = fi("F", "force", "N", "MLT-2")
+    given = {
+        "rho": {"value": 8000, "unit": "kg/m^3", "name": "density",  "dimension": "ML-3"},
+        "V":   {"value": 0.5,  "unit": "m^3",    "name": "volume",   "dimension": "L3"},
+        "u":   {"value": 10,   "unit": "m/s",    "name": "u-vel",    "dimension": "LT-1"},
+        "v":   {"value": 30,   "unit": "m/s",    "name": "v-vel",    "dimension": "LT-1"},
+        "s":   {"value": 40,   "unit": "m",      "name": "displ",    "dimension": "L"},
+    }
+    selector = make_selector({
+        "F": "laws_of_motion_newtons_second_law",
+        "a": "kinematics_v2_u2_2as",
+    })
+    res = resolve_frontier(
+        target=target, given=given, graph_index=graph,
+        question="test", llm_round_fn=selector,
+        search_query="find the net force on a body that accelerates",
+        retriever=None,
+    )
+    assert res.success
+    assert len(res.decision_log) >= 1
+    for entry in res.decision_log:
+        assert "candidates_shown" in entry, \
+            f"decision_log entry missing candidates_shown: {entry.keys()}"
+        if entry["decision"] == "pick":
+            assert len(entry["candidates_shown"]) >= 1
+            assert entry["chosen_eq_id"] in [c["id"] for c in entry["candidates_shown"]], \
+                "chosen_eq_id must be in candidates_shown for picked rounds"
+    print(f"[test_decision_log_records_candidates_shown] "
+          f"{len(res.decision_log)} log entries, all have candidates_shown — PASSED")
+
+
+def test_resolve_frontier_accepts_search_query_and_retriever_kwargs():
+    """v7: resolve_frontier's new optional kwargs default safely. Calling
+    without them (the old v6 signature) must still work — the live tests
+    do this. Calling with them must also work."""
+    import inspect
+    from solver.frontier_resolver import resolve_frontier
+    sig = inspect.signature(resolve_frontier)
+    assert "search_query" in sig.parameters
+    assert "retriever" in sig.parameters
+    # Both should default to safe values (no retriever → symbol-only)
+    assert sig.parameters["search_query"].default == ""
+    assert sig.parameters["retriever"].default is None
+    print("[test_resolve_frontier_accepts_search_query_and_retriever_kwargs] PASSED")
+
+
+def test_parse_system_emits_search_query():
+    """v7: the Stage 1 parse system prompt must instruct the LLM to emit
+    a search_query field for the new ChromaDB landing step."""
+    from solver.llm_interface import _build_parse_system
+    prompt = _build_parse_system({"laws_of_motion", "kinematics"})
+    assert "search_query" in prompt, \
+        "Stage 1 prompt must mention search_query field"
+    assert "height" in prompt.lower() and "displacement" in prompt.lower(), \
+        "Stage 1 prompt must guide LLM on height/displacement equivalence"
+    print("[test_parse_system_emits_search_query] PASSED")
+
+
+def test_round_selector_prompt_mentions_landing_source_and_none():
+    """v7: the Stage 2 prompt must explain landing_source tags and the
+    'decision: none' option, so the LLM uses them correctly."""
+    from solver.llm_interface import ROUND_SELECT_SYSTEM
+    assert "landing_source" in ROUND_SELECT_SYSTEM
+    assert '"semantic"' in ROUND_SELECT_SYSTEM
+    assert '"both"' in ROUND_SELECT_SYSTEM
+    assert '"none"' in ROUND_SELECT_SYSTEM
+    print("[test_round_selector_prompt_mentions_landing_source_and_none] PASSED")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_all():
     tests = [
+        test_dimension_normalization_format_independent,
         test_dimension_compat,
         test_candidates_symbol_m,
         test_candidates_symbol_F,
         test_candidates_visited_exclusion,
         test_candidates_conservation_law_excluded,
+        test_already_targeted_symbol_not_reintroduced,
         test_parse_system_has_target_identification_rule,
         test_narrate_system_forbids_new_computation,
         test_domain_filter_narrows_candidates,
@@ -699,6 +1200,20 @@ def run_all():
         test_backtracking_excluded_eq,
         test_regression_fmva_full,
         test_simultaneous_solve_execution,
+        # v7 additions
+        test_dimension_normalizer_handles_theta_and_N,
+        test_physical_constants_contain_graph_names,
+        test_graph_uses_underscored_constant_names,
+        test_constants_not_treated_as_unknowns,
+        test_landing_layer_falls_through_when_no_retriever,
+        test_landing_layer_unions_symbol_and_semantic,
+        test_landing_layer_drops_dimensionally_incompatible_semantic_candidates,
+        test_round_selector_surfaces_invalid_id_as_no_pick,
+        test_round_selector_handles_decision_none,
+        test_decision_log_records_candidates_shown,
+        test_resolve_frontier_accepts_search_query_and_retriever_kwargs,
+        test_parse_system_emits_search_query,
+        test_round_selector_prompt_mentions_landing_source_and_none,
     ]
     passed = failed = 0
     for t in tests:

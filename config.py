@@ -14,12 +14,27 @@ MAIN_GRAPH_PATH = DATA_DIR / "physics_equation_graph_final.json"
 CHROMA_DIR      = str(BASE_DIR / "chroma_db")
 BM25_INDEX_PATH = str(BASE_DIR / "bm25_index.pkl")
 
-# ── ChromaDB (optional, kept for legacy) ──────────────────────────────────────
-COLLECTION_NAME = "physics_equations"
-EMBED_MODEL     = "BAAI/bge-large-en-v1.5"
-HYBRID_ALPHA    = 0.6
-RAG_TOP_K       = 5
-GRAPH_HOPS      = 1
+# ── ChromaDB retrieval ────────────────────────────────────────────────────────
+# Restored in v7: ChromaDB landing is the *initial* equation-finding step,
+# per the original architecture brief. Once landed, frontier expansion uses
+# the deterministic symbol→equations index in graph_loader, NOT ChromaDB.
+COLLECTION_NAME    = "physics_equations"
+EMBED_MODEL        = "BAAI/bge-large-en-v1.5"
+BGE_QUERY_PREFIX   = "Represent this sentence for searching relevant passages: "
+HYBRID_ALPHA       = 0.6
+RAG_TOP_K          = 5     # Stage 2 landing: top-K seed equations from ChromaDB
+GRAPH_HOPS         = 1     # legacy expand_neighbors hop count (unused by frontier_resolver)
+
+# Feature flag: ChromaDB landing is additive — when enabled and the index
+# exists, semantic-matched candidates are unioned with symbol-matched
+# candidates for the initial target. When disabled or the index isn't built,
+# v6 behavior (pure symbol lookup) is preserved exactly. This is the safety
+# property: enabling Chroma can only ADD candidates the LLM can see; it
+# never removes one v6 would have shown.
+ENABLE_CHROMA_LANDING = os.getenv("ENABLE_CHROMA_LANDING", "auto").lower()
+# "auto" → use Chroma if the index exists on disk, otherwise silently fall back
+# "true" / "1" / "yes" → require Chroma; raise if the index isn't there
+# "false" / "0" / "no" → never use Chroma (force v6 behavior)
 
 # ── Frontier resolver ─────────────────────────────────────────────────────────
 MAX_CHAIN_DEPTH = 6   # max frontier resolution rounds
@@ -28,24 +43,38 @@ MAX_CHAIN_DEPTH = 6   # max frontier resolution rounds
 # candidate payload. If domain-filtered candidates for a round still estimate
 # above this, frontier_resolver splits that round into sequential per-symbol
 # calls instead of one batched call, rather than risking an oversized request.
-# Headroom: system prompt (~500 tok) + question + "already known" section
-# need to fit alongside this within the model's per-request token limit.
 MAX_CANDIDATES_TOKENS_PER_ROUND = 4000
 
 # Physical constants — never treated as unknowns; always excluded from
-# the frontier (the resolver will never try to "solve for" any of these).
+# the frontier. The frontier_resolver checks this set when deciding what
+# variables it still needs to solve for; sympy_executor uses the catalog
+# below for numeric substitution.
+#
+# v7 reconciliation note: this set must contain EVERY symbol the graph
+# actually uses for a physical constant. v6 missed the underscoreless
+# forms ('epsilon0', 'mu0') that the graph file uses, which meant the
+# frontier would try to "solve for" epsilon0 in any electrostatics
+# question. Both forms are listed here in case any equation file still
+# uses the old name; the graph itself has been standardized to the
+# underscored form ('epsilon_0', 'mu_0') in v7.
 PHYSICAL_CONSTANTS = {
-    'g', 'pi', 'c', 'h_planck', 'k_B', 'R_g',
-    'NA', 'epsilon_0', 'mu_0', 'e_charge', 'G',
+    'g', 'pi', 'c',
+    'h_planck', 'k_B', 'R_g', 'NA', 'N_A',
+    'epsilon_0', 'epsilon0',
+    'mu_0', 'mu0',
+    'e_charge',
+    'G',
 }
 
 # True universal constants — context-independent, same value everywhere,
 # always safe to surface as "already known" without per-question judgment.
-# 'g' is deliberately EXCLUDED: it is Earth-surface gravitational
-# acceleration, not a constant of nature (compare to G, which is universal).
-# g must only become available when Stage 1 actually judges the scenario
-# implies it (e.g. "free fall", "dropped", "projectile") — never by default.
-UNIVERSAL_CONSTANTS = PHYSICAL_CONSTANTS - {'g'}
+# 'g' is deliberately EXCLUDED (Earth-surface, not a constant of nature).
+UNIVERSAL_CONSTANTS = {
+    'pi', 'c', 'G',
+    'epsilon_0', 'mu_0',
+    'h_planck', 'k_B', 'R_g', 'NA',
+    'e_charge',
+}
 
 # Equations containing these symbols are conservation-law forms —
 # cannot be rearranged for a specific numerical value, skip during resolution.
@@ -61,6 +90,10 @@ GROQ_TEMPERATURE = 0.1
 # Stage 1 uses this to inject constants that are implied by the scenario
 # (e.g. "in vacuum" → epsilon_0; "free fall" → g).
 # symbol → {value (SI), unit, name, dimension, cue: scenario keywords}
+#
+# IMPORTANT: the keys here are the CANONICAL names. The graph has been
+# standardized in v7 to use these same names. If you ever add a new
+# physical constant, add it here AND ensure the graph uses the same symbol.
 IMPLICIT_CONSTANTS_CATALOG: dict[str, dict] = {
     "g": {
         "value": 9.8, "unit": "m/s^2",
@@ -99,12 +132,12 @@ IMPLICIT_CONSTANTS_CATALOG: dict[str, dict] = {
     },
     "R_g": {
         "value": 8.314, "unit": "J/(mol·K)",
-        "name": "universal gas constant", "dimension": "ML2T-2K-1mol-1",
+        "name": "universal gas constant", "dimension": "ML2T-2N-1Theta-1",
         "cue": "ideal gas, molar, PV=nRT",
     },
     "NA": {
         "value": 6.022e23, "unit": "mol^-1",
-        "name": "Avogadro number", "dimension": "mol-1",
+        "name": "Avogadro number", "dimension": "N-1",
         "cue": "moles, molecules, atoms per mole",
     },
     "e_charge": {
@@ -114,7 +147,7 @@ IMPLICIT_CONSTANTS_CATALOG: dict[str, dict] = {
     },
     "pi": {
         "value": 3.141592653589793, "unit": "",
-        "name": "pi", "dimension": "dimensionless",
+        "name": "pi", "dimension": "1",
         "cue": "circle, sphere, cylinder, angular, period",
     },
 }

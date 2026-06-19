@@ -4942,9 +4942,9 @@
     },
     {
       "id": "electrostatics_coulomb_law",
-      "equation_str": "F = q1*q2/(4*pi*epsilon0*r**2)",
+      "equation_str": "F = q1*q2/(4*pi*epsilon_0*r**2)",
       "latex": "F=\\frac{1}{4\\pi\\epsilon_0}\\frac{q_1q_2}{r^2}",
-      "sympy_expr": "Eq(F, q1*q2/(4*pi*epsilon0*r**2))",
+      "sympy_expr": "Eq(F, q1*q2/(4*pi*epsilon_0*r**2))",
       "variables": {
         "F": {
           "name": "force",
@@ -4966,7 +4966,7 @@
           "unit": "1",
           "dimension": "1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -5042,9 +5042,9 @@
     },
     {
       "id": "electrostatics_point_charge_field",
-      "equation_str": "E = q/(4*pi*epsilon0*r**2)",
+      "equation_str": "E = q/(4*pi*epsilon_0*r**2)",
       "latex": "E=\\frac{1}{4\\pi\\epsilon_0}\\frac{q}{r^2}",
-      "sympy_expr": "Eq(E, q/(4*pi*epsilon0*r**2))",
+      "sympy_expr": "Eq(E, q/(4*pi*epsilon_0*r**2))",
       "variables": {
         "E": {
           "name": "energy or electric field",
@@ -5061,7 +5061,7 @@
           "unit": "1",
           "dimension": "1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -5095,9 +5095,9 @@
     },
     {
       "id": "electrostatics_electric_potential",
-      "equation_str": "V = q/(4*pi*epsilon0*r)",
+      "equation_str": "V = q/(4*pi*epsilon_0*r)",
       "latex": "V=\\frac{1}{4\\pi\\epsilon_0}\\frac{q}{r}",
-      "sympy_expr": "Eq(V, q/(4*pi*epsilon0*r))",
+      "sympy_expr": "Eq(V, q/(4*pi*epsilon_0*r))",
       "variables": {
         "V": {
           "name": "volume or potential difference",
@@ -5114,7 +5114,7 @@
           "unit": "1",
           "dimension": "1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -5147,9 +5147,9 @@
     },
     {
       "id": "electrostatics_potential_energy_two_charges",
-      "equation_str": "U = q1*q2/(4*pi*epsilon0*r)",
+      "equation_str": "U = q1*q2/(4*pi*epsilon_0*r)",
       "latex": "U=\\frac{1}{4\\pi\\epsilon_0}\\frac{q_1q_2}{r}",
-      "sympy_expr": "Eq(U, q1*q2/(4*pi*epsilon0*r))",
+      "sympy_expr": "Eq(U, q1*q2/(4*pi*epsilon_0*r))",
       "variables": {
         "U": {
           "name": "potential energy",
@@ -5171,7 +5171,7 @@
           "unit": "1",
           "dimension": "1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -5337,16 +5337,16 @@
     },
     {
       "id": "capacitors_parallel_plate",
-      "equation_str": "C = epsilon0*A/d",
+      "equation_str": "C = epsilon_0*A/d",
       "latex": "C=\\frac{\\epsilon_0A}{d}",
-      "sympy_expr": "Eq(C, epsilon0*A/d)",
+      "sympy_expr": "Eq(C, epsilon_0*A/d)",
       "variables": {
         "C": {
           "name": "capacitance or heat capacity",
           "unit": "F or J/K",
           "dimension": "M-1L-2T4A2 or ML2T-2Theta-1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -5384,9 +5384,9 @@
     },
     {
       "id": "capacitors_with_dielectric",
-      "equation_str": "C = k*epsilon0*A/d",
+      "equation_str": "C = k*epsilon_0*A/d",
       "latex": "C=\\frac{K\\epsilon_0A}{d}",
-      "sympy_expr": "Eq(C, k*epsilon0*A/d)",
+      "sympy_expr": "Eq(C, k*epsilon_0*A/d)",
       "variables": {
         "C": {
           "name": "capacitance or heat capacity",
@@ -5398,7 +5398,7 @@
           "unit": "N/m or m^-1",
           "dimension": "MT-2 or L-1"
         },
-        "epsilon0": {
+        "epsilon_0": {
           "name": "permittivity of free space",
           "unit": "F/m",
           "dimension": "M-1L-3T4A2"
@@ -6126,16 +6126,16 @@
     },
     {
       "id": "magnetism_field_long_wire",
-      "equation_str": "B = mu0*I/(2*pi*r)",
+      "equation_str": "B = mu_0*I/(2*pi*r)",
       "latex": "B=\\frac{\\mu_0I}{2\\pi r}",
-      "sympy_expr": "Eq(B, mu0*I/(2*pi*r))",
+      "sympy_expr": "Eq(B, mu_0*I/(2*pi*r))",
       "variables": {
         "B": {
           "name": "bulk modulus or magnetic field",
           "unit": "Pa or T",
           "dimension": "ML-1T-2 or MT-2A-1"
         },
-        "mu0": {
+        "mu_0": {
           "name": "permeability of free space",
           "unit": "N/A^2",
           "dimension": "MLT-2A-2"
@@ -6178,16 +6178,16 @@
     },
     {
       "id": "magnetism_field_solenoid",
-      "equation_str": "B = mu0*n*I",
+      "equation_str": "B = mu_0*n*I",
       "latex": "B=\\mu_0nI",
-      "sympy_expr": "Eq(B, mu0*n*I)",
+      "sympy_expr": "Eq(B, mu_0*n*I)",
       "variables": {
         "B": {
           "name": "bulk modulus or magnetic field",
           "unit": "Pa or T",
           "dimension": "ML-1T-2 or MT-2A-1"
         },
-        "mu0": {
+        "mu_0": {
           "name": "permeability of free space",
           "unit": "N/A^2",
           "dimension": "MLT-2A-2"
@@ -11439,7 +11439,7 @@
       "to": "electrostatics_potential_energy_two_charges",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "q1",
         "q2",
@@ -11452,7 +11452,7 @@
       "to": "electrostatics_electric_potential",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11463,7 +11463,7 @@
       "to": "electrostatics_point_charge_field",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11502,7 +11502,7 @@
       "to": "electrostatics_electric_potential",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "q",
         "r"
@@ -11514,7 +11514,7 @@
       "to": "electrostatics_coulomb_law",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11525,7 +11525,7 @@
       "to": "electrostatics_potential_energy_two_charges",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11536,7 +11536,7 @@
       "to": "electrostatics_point_charge_field",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "q",
         "r"
@@ -11548,7 +11548,7 @@
       "to": "electrostatics_coulomb_law",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11559,7 +11559,7 @@
       "to": "electrostatics_potential_energy_two_charges",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11570,7 +11570,7 @@
       "to": "electrostatics_coulomb_law",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "q1",
         "q2",
@@ -11583,7 +11583,7 @@
       "to": "electrostatics_electric_potential",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11594,7 +11594,7 @@
       "to": "electrostatics_point_charge_field",
       "type": "SHARES_VARIABLE",
       "shared_variables": [
-        "epsilon0",
+        "epsilon_0",
         "pi",
         "r"
       ],
@@ -11690,7 +11690,7 @@
         "A",
         "C",
         "d",
-        "epsilon0"
+        "epsilon_0"
       ],
       "note": "Both equations share A, C, d, epsilon0 and can be chained within capacitors problems."
     },
@@ -11720,7 +11720,7 @@
         "A",
         "C",
         "d",
-        "epsilon0"
+        "epsilon_0"
       ],
       "note": "Both equations share A, C, d, epsilon0 and can be chained within capacitors problems."
     },
@@ -12221,7 +12221,7 @@
       "shared_variables": [
         "B",
         "I",
-        "mu0"
+        "mu_0"
       ],
       "note": "Both equations share B, I, mu0 and can be chained within magnetism problems."
     },
@@ -12252,7 +12252,7 @@
       "shared_variables": [
         "B",
         "I",
-        "mu0"
+        "mu_0"
       ],
       "note": "Both equations share B, I, mu0 and can be chained within magnetism problems."
     },

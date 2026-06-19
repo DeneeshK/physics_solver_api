@@ -1,15 +1,22 @@
 """
 solver/retrieval.py
 Hybrid retrieval: BAAI/bge-large semantic search + BM25 keyword search.
-Returns top-k equation nodes + their graph neighbors as the candidate pool.
+
+v7 changes:
+  - Restored to the live pipeline (v6 had this file present but unused; even
+    the import was broken — BGE_QUERY_PREFIX was referenced but undefined in
+    config.py).
+  - Added try_load() classmethod for graceful absence of the index. If the
+    user hasn't run `python -m solver.ingest` yet, this returns None and the
+    pipeline silently falls back to symbol-only landing.
+  - search() now returns (node, scores) tuples instead of bare nodes so the
+    landing layer can show the LLM why each candidate was surfaced.
 """
+from __future__ import annotations
 import pickle
 from pathlib import Path
 
 import numpy as np
-import chromadb
-from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
 
 from config import (
     CHROMA_DIR, BM25_INDEX_PATH, COLLECTION_NAME,
@@ -20,11 +27,21 @@ from config import (
 
 class Retriever:
     """
-    Wraps ChromaDB + BM25 + graph expansion.
-    Instantiate once, call .search() per query.
+    Wraps ChromaDB + BM25 over the equation graph's rag_text field.
+    Instantiate once per process; .search() per query.
+
+    Heavy: loading the BGE embedding model is ~1.3 GB and takes ~10s on cold
+    start. PhysicsSolver lazily instantiates a single Retriever instance at
+    server startup.
     """
 
     def __init__(self, graph_index):
+        # Heavy imports kept inside __init__ so the module can be imported
+        # cheaply even when no Retriever is going to be constructed (e.g.
+        # in deterministic tests that mock out retrieval).
+        import chromadb
+        from sentence_transformers import SentenceTransformer
+
         self.graph   = graph_index
         self.n_nodes = len(graph_index.nodes)
         self._id_to_idx = {nid: i for i, nid in enumerate(
@@ -42,9 +59,32 @@ class Retriever:
         with open(BM25_INDEX_PATH, "rb") as f:
             bm25_data = pickle.load(f)
         self.bm25     = bm25_data["bm25"]
-        self.node_ids = bm25_data["node_ids"]   # ordered list for BM25 score array
+        self.node_ids = bm25_data["node_ids"]
 
         print("[Retriever] Ready.")
+
+    # ── Graceful loader ───────────────────────────────────────────────────────
+    @classmethod
+    def try_load(cls, graph_index) -> "Retriever | None":
+        """
+        Returns a Retriever if the ChromaDB + BM25 indexes both exist on disk.
+        Returns None if either is missing — caller falls back to symbol-only
+        landing. Never raises; the absence of an index is an expected state
+        during initial deployment or in test environments.
+        """
+        chroma_path = Path(CHROMA_DIR)
+        bm25_path   = Path(BM25_INDEX_PATH)
+        if not chroma_path.exists() or not bm25_path.exists():
+            return None
+        try:
+            return cls(graph_index)
+        except Exception as e:
+            # Lower than a print — but visible. If Chroma was started but the
+            # collection doesn't exist, fall back rather than crashing the
+            # whole solver.
+            print(f"[Retriever] Could not load: {e!r}. Falling back to "
+                  f"symbol-only landing.")
+            return None
 
     # ── Core search ───────────────────────────────────────────────────────────
     def search(
@@ -52,31 +92,11 @@ class Retriever:
         query:     str,
         top_k:     int   = RAG_TOP_K,
         alpha:     float = HYBRID_ALPHA,
-        expand:    bool  = True,
-        hops:      int   = GRAPH_HOPS,
     ) -> list[dict]:
         """
-        Returns ordered list of equation node dicts.
-        Seeds (highest relevance) come first.
-        If expand=True, one-hop graph neighbors are appended.
-        """
-        seed_nodes = self._hybrid_search(query, top_k, alpha)
-        if not expand:
-            return seed_nodes
-
-        seed_ids  = [n["id"] for n in seed_nodes]
-        all_nodes = self.graph.expand_neighbors(seed_ids, hops=hops)
-        return all_nodes
-
-    def search_scores(
-        self,
-        query: str,
-        top_k: int   = RAG_TOP_K,
-        alpha: float = HYBRID_ALPHA,
-    ) -> list[dict]:
-        """
-        Same as search() but returns dicts with score breakdown.
-        Useful for debugging retrieval quality.
+        Returns ordered list of dicts: {node, score, semantic_score, bm25_score}.
+        Highest relevance first. No graph expansion — this is the landing layer
+        only; frontier expansion is the graph_index's job.
         """
         n   = self.n_nodes
         idx = self._id_to_idx
@@ -97,7 +117,7 @@ class Retriever:
             if i is not None:
                 sem_scores[i] = 1.0 - dist
         if sem_scores.max() > 0:
-            sem_scores /= sem_scores.max()
+            sem_scores = sem_scores / sem_scores.max()
 
         # ── BM25 ──────────────────────────────────────────────────────────────
         bm25_raw = np.array(self.bm25.get_scores(query.lower().split()))
@@ -119,8 +139,3 @@ class Retriever:
                 "bm25_score":     round(float(bm25_scores[i]), 4),
             })
         return results
-
-    # ── Private ───────────────────────────────────────────────────────────────
-    def _hybrid_search(self, query: str, top_k: int, alpha: float) -> list[dict]:
-        scored = self.search_scores(query, top_k, alpha)
-        return [r["node"] for r in scored]
