@@ -151,20 +151,57 @@ THE UNKNOWN
   for force (F), NOT acceleration. Acceleration is an intermediate
   quantity needed to get there, not the unknown.
 
-SEARCH QUERY
-- search_query: a single English sentence describing what the question
-  is asking for and the physical scenario, written for similarity search
-  against equation descriptions. Mention the unknown quantity by NAME (not
-  symbol), the key scenario words from the question, and the physics
-  category. Do NOT include numbers. Examples:
-    "find the final velocity of an object falling freely from a given
-     height under gravity"
-    "find the power dissipated in a resistor with given current and voltage"
-    "find the net force on a body that accelerates from one speed to
-     another over a known displacement"
-  The downstream retrieval will use this to find candidate equations whose
-  descriptions match the scenario, not just equations containing a matching
-  symbol.
+SEARCH QUERY (CONCEPT-LEVEL — important)
+- search_query: the conceptual identity of the equation that solves this
+  problem, named at the physics-concept level, NOT a description of the
+  question's keywords or symbols.
+
+  The search_query is matched against equation descriptions that are
+  themselves concept-level identifiers (e.g. "Newton's Second Law of
+  Motion", "Archimedes' Principle for the buoyant force",
+  "Time-Free Kinematic Relation", "Coulomb's Law", "Photon Energy
+  (Planck-Einstein Relation)"). To make matching work, write the
+  search_query in the same register.
+
+  Read the question's STORY: what's moving, in what context (in a fluid?
+  in a circuit? in vacuum? near Earth? in a magnetic field?), and what's
+  being asked. Then NAME the physics concept that would solve it.
+
+  GOOD examples:
+    Question: "A body of density 8000 kg/m^3 and volume 0.5 m^3 accelerates
+              from 10 m/s to 30 m/s over 40 m. Find the net force."
+      → "Newton's second law applied to find net force on a body that is
+         undergoing acceleration"
+    (NOT "find force given density volume velocity displacement" —
+     that's keyword-level, will mis-rank against equations that happen to
+     contain density and volume.)
+
+    Question: "A block is raised to a height of 5 m and released, falling
+              freely under gravity. Find the velocity just before impact."
+      → "time-free kinematic relation for a body falling freely from a
+         height under constant gravitational acceleration"
+    (NOT "find velocity given height and free fall" — too keyword-y.)
+
+    Question: "A 50 ohm resistor has a potential difference of 10 V across
+              it. Determine the power dissipated."
+      → "electrical power dissipated by a resistor in a circuit with known
+         voltage and current"
+
+    Question: "Two point charges of 2 microC and 3 microC are separated by
+              10 cm in vacuum. Find the force between them."
+      → "Coulomb's law for the electrostatic force between two point
+         charges separated by a distance"
+
+  BAD pattern to avoid: listing the given variables or symbols. This
+  makes the search query keyword-shaped, which causes the retrieval to
+  match by surface variable-overlap rather than by physics concept. A
+  question that gives density and volume to compute mass for use in F=ma
+  must not produce a search query mentioning "density and volume" —
+  that would mis-match against buoyancy equations.
+
+  Style: one sentence, no numbers, name the physics concept by its
+  standard name when there is one, otherwise describe the conceptual
+  mechanism. Length: 10-25 words.
 
 OUTPUT
 - Output ONLY the JSON object, nothing else.
@@ -291,17 +328,22 @@ def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
     known_symbols by construction (it wouldn't be a frontier item otherwise),
     so it always survives this filter.
 
+    v7.1: rag_text is no longer truncated. v6 capped it at 120 chars because
+    the rag_texts were templated boilerplate where the first sentence was a
+    domain header shared across all equations in that domain — i.e. the
+    truncated portion had no disambiguation value. After the v7.1 rewrite,
+    each rag_text is a concept-level identifier (~400-1200 chars) where the
+    full content is essential for the LLM's physics judgment. We pay the
+    tokens because the content now earns them.
+
     v7: surfaces `landing_source` (added by solver.landing.get_landing_candidates)
     when present. The LLM reads it as context, not as a forced ranking.
     """
-    rag = eq.get("rag_text", "")
-    if len(rag) > 120:
-        rag = rag[:117] + "..."
     known_symbols = known_symbols or set()
     out = {
         "id":           eq["id"],
         "equation":     eq["equation_str"],
-        "description":  rag,
+        "description":  eq.get("rag_text", ""),
         "conditions":   eq.get("conditions", [])[:2],
         "variables":    {
             sym: {"name": meta["name"], "unit": meta["unit"]}

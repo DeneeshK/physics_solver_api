@@ -1173,6 +1173,148 @@ def test_round_selector_prompt_mentions_landing_source_and_none():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v7.1 — concept-level rag_text and search_query tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_exemplars_applied_to_graph():
+    """v7.1: the 16 hand-authored exemplars must be present in the graph's
+    rag_text fields after apply_exemplars_only.py runs."""
+    import json
+    from pathlib import Path
+    from config import MAIN_GRAPH_PATH
+    with open(MAIN_GRAPH_PATH) as f:
+        graph = json.load(f)
+    nodes_by_id = {n["id"]: n for n in graph["nodes"]}
+
+    exemplars_path = Path(MAIN_GRAPH_PATH).parent.parent / "scripts" / "rag_text_exemplars.json"
+    if not exemplars_path.exists():
+        print(f"[test_exemplars_applied_to_graph] SKIP (no exemplars file)")
+        return
+    with open(exemplars_path) as f:
+        ex_data = json.load(f)
+
+    applied = 0
+    not_applied = []
+    for eid, body in ex_data["exemplars"].items():
+        if eid not in nodes_by_id:
+            continue
+        if nodes_by_id[eid].get("rag_text", "") == body["rag_text"]:
+            applied += 1
+        else:
+            not_applied.append(eid)
+    assert applied >= len(ex_data["exemplars"]) - 1, \
+        f"only {applied}/{len(ex_data['exemplars'])} exemplars applied; missing: {not_applied}"
+    print(f"[test_exemplars_applied_to_graph] {applied}/{len(ex_data['exemplars'])} applied — PASSED")
+
+
+def test_exemplar_rag_texts_are_concept_level():
+    """v7.1: every exemplar must open with a named physics concept (not generic
+    'Use it when...' boilerplate from v6) and must mention what it is NOT
+    (the look-alike-exclusion property)."""
+    import json
+    from pathlib import Path
+    from config import MAIN_GRAPH_PATH
+    exemplars_path = Path(MAIN_GRAPH_PATH).parent.parent / "scripts" / "rag_text_exemplars.json"
+    if not exemplars_path.exists():
+        print(f"[test_exemplar_rag_texts_are_concept_level] SKIP (no exemplars file)")
+        return
+    with open(exemplars_path) as f:
+        ex_data = json.load(f)
+
+    # Banned openers — the old v6 templated patterns
+    banned_openers = [
+        "Use it when pressure",
+        "Use it when force",
+        "Use it when energy",
+        "Use it when",
+    ]
+    # Concept-distinction markers — at least one of these patterns should
+    # appear, signaling the rag_text explicitly contrasts itself with
+    # look-alikes (either by exclusion or by family-position).
+    distinction_markers = [
+        "distinct from", "different from", "NOT use", "NOT applicable",
+        "NOT for", "not the right concept", "NOT a", "Distinct from",
+        "Conceptually distinct",
+        # Family-position language — equivalent concept-distinction, more naturalistic
+        "Pairs with", "pairs with", "Choose this", "choose this",
+        "Same kinematic family", "same kinematic family",
+        "is the wrong concept", "wrong concept",
+    ]
+    issues = []
+    for eid, body in ex_data["exemplars"].items():
+        rt = body["rag_text"]
+        for bad in banned_openers:
+            if rt.startswith(bad):
+                issues.append(f"{eid}: starts with banned v6 opener {bad!r}")
+                break
+        if not any(m.lower() in rt.lower() for m in distinction_markers):
+            issues.append(f"{eid}: no concept-distinction language (look-alike-exclusion property)")
+    assert not issues, "\n".join(issues)
+    print(f"[test_exemplar_rag_texts_are_concept_level] all "
+          f"{len(ex_data['exemplars'])} exemplars passed concept-level checks — PASSED")
+
+
+def test_stage1_prompt_has_concept_level_search_query_guidance():
+    """v7.1: Stage 1's prompt for search_query must explicitly tell the LLM
+    to write a concept-level query (named physics concept), not a keyword-
+    level one. The cost of misframing this prompt is the exact failure
+    mode the user kept flagging (F=ρgh winning over F=ma by symbol overlap)."""
+    from solver.llm_interface import _build_parse_system
+    prompt = _build_parse_system({"laws_of_motion", "kinematics"})
+    must_have = [
+        "CONCEPT-LEVEL",
+        "Newton's Second Law",       # used as a concept-name example
+        "Archimedes' Principle",     # used as a concept-name example
+        "keyword-shaped",            # the antipattern is named
+        "physics concept",
+    ]
+    missing = [m for m in must_have if m not in prompt]
+    assert not missing, f"Stage 1 prompt missing concept-level guidance: {missing}"
+    print("[test_stage1_prompt_has_concept_level_search_query_guidance] PASSED")
+
+
+def test_format_candidate_no_longer_truncates_rag_text():
+    """v7.1: the 120-char rag_text truncation in _format_candidate was
+    appropriate when rag_texts were templated boilerplate. With concept-
+    level rag_texts, the truncation throws away the disambiguation signal.
+    v7.1 removes it."""
+    from solver.llm_interface import _format_candidate
+    long_rag = "x" * 800  # well over the old 120-char cap
+    eq = {
+        "id": "test_id",
+        "equation_str": "F = m*a",
+        "rag_text": long_rag,
+        "conditions": ["c1", "c2"],
+        "variables": {"F": {"name": "force", "unit": "N", "dimension": "MLT-2"}},
+    }
+    out = _format_candidate(eq)
+    assert out["description"] == long_rag, \
+        f"rag_text should not be truncated; got {len(out['description'])} chars from {len(long_rag)} input"
+    print(f"[test_format_candidate_no_longer_truncates_rag_text] "
+          f"{len(out['description'])} chars preserved — PASSED")
+
+
+def test_exemplar_concept_names_are_unique():
+    """v7.1: the user's principle is 'each concept is a unique identifier.'
+    Verify that no two exemplars share a concept_name — every exemplar
+    represents a distinct physics concept."""
+    import json
+    from pathlib import Path
+    from config import MAIN_GRAPH_PATH
+    exemplars_path = Path(MAIN_GRAPH_PATH).parent.parent / "scripts" / "rag_text_exemplars.json"
+    if not exemplars_path.exists():
+        print("[test_exemplar_concept_names_are_unique] SKIP (no exemplars file)")
+        return
+    with open(exemplars_path) as f:
+        ex_data = json.load(f)
+    names = [body["concept_name"] for body in ex_data["exemplars"].values()]
+    dupes = {n for n in names if names.count(n) > 1}
+    assert not dupes, f"Duplicate concept_names violate uniqueness: {dupes}"
+    print(f"[test_exemplar_concept_names_are_unique] "
+          f"{len(set(names))} distinct concepts across {len(names)} exemplars — PASSED")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1214,6 +1356,12 @@ def run_all():
         test_resolve_frontier_accepts_search_query_and_retriever_kwargs,
         test_parse_system_emits_search_query,
         test_round_selector_prompt_mentions_landing_source_and_none,
+        # v7.1 additions
+        test_exemplars_applied_to_graph,
+        test_exemplar_rag_texts_are_concept_level,
+        test_stage1_prompt_has_concept_level_search_query_guidance,
+        test_format_candidate_no_longer_truncates_rag_text,
+        test_exemplar_concept_names_are_unique,
     ]
     passed = failed = 0
     for t in tests:
