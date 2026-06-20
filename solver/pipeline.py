@@ -85,6 +85,8 @@ class PhysicsSolver:
 
     def solve(self, question: str) -> SolverResponse:
         t0 = time.time()
+        from solver.solver_log import log, log_error
+        log("solve_entry", question=question)
 
         # ═══════════════════════════════════════════════════════════════════════
         # Stage 1 — Parse
@@ -92,6 +94,7 @@ class PhysicsSolver:
         try:
             parsed = parse_question(question, valid_domains=self.graph.all_domains)
         except Exception as e:
+            log_error("solve_stage1_failed", exc=e)
             return self._error(question, f"Stage 1 parse failed: {e}", t0)
 
         given_meta  = parsed.get("given", {})   # {sym: {value,unit,name,dimension}}
@@ -160,6 +163,8 @@ class PhysicsSolver:
         exec_trace  = None
 
         for attempt in range(1, MAX_BACKTRACK_ATTEMPTS + 1):
+            log("solve_attempt", attempt=attempt,
+                target=target_sym, n_excluded=len(excluded_eqs))
             resolution = resolve_frontier(
                 target          = target,
                 given           = given_full,
@@ -280,6 +285,12 @@ class PhysicsSolver:
             for s in resolution.plan
         ]
 
+        log("solve_success",
+            final_value=exec_trace.final_float,
+            final_unit=exec_trace.final_unit,
+            confidence=confidence,
+            chain_summary=chain_summary,
+            elapsed_s=round(time.time() - t0, 2))
         return SolverResponse(
             question        = question,
             final_value     = exec_trace.final_float,
@@ -298,6 +309,8 @@ class PhysicsSolver:
         self, question: str, error: str, t0: float,
         decision_log: list = None,
     ) -> SolverResponse:
+        from solver.solver_log import log
+        log("solve_error", error=error, elapsed_s=round(time.time() - t0, 2))
         return SolverResponse(
             question=question, final_value=0.0,
             final_value_exact="", final_unit="", final_symbol="",

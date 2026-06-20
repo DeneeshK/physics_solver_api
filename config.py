@@ -82,8 +82,39 @@ NON_SOLVABLE_SYMBOLS = {'constant'}
 
 # ── Groq API ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
-MODEL_FAST       = "llama-3.1-8b-instant"      # Stage 1 parse + Stage 2 selection
+MODEL_FAST       = "llama-3.1-8b-instant"      # Stage 1 parse + (default) Stage 2 selection
 MODEL_SMART      = "llama-3.3-70b-versatile"   # Stage 4 narration + Stage 5 distractors
+
+# v7.1.2: Stage 2 (round_selector) model is now overridable. The default is
+# MODEL_FAST for cost/latency, but concept-level rag_texts (v7.1+) demand
+# more reasoning than the 8B model reliably delivers. If you see
+# `llm_omitted_item` or `llm_decision_none` fallbacks where the right
+# equation was clearly in the candidates, switch to MODEL_SMART:
+#
+#   STAGE2_MODEL=llama-3.3-70b-versatile  (set in .env)
+#
+# Trade-off: ~5–10x slower, ~5x cost. But the v6 8B-friendly architecture
+# was relying on cheap pattern-matching against templated rag_texts, and
+# that escape hatch is gone in v7.1+ by design.
+import os
+STAGE2_MODEL     = os.getenv("STAGE2_MODEL", MODEL_FAST)
+
+# v7.1.3: Stage 2 batching strategy. The default is "auto" — single-item
+# rounds use one batched call (cheap, fast), multi-item rounds split into
+# one LLM call per frontier item.
+#
+# Why this exists: chained problems (e.g. F=ma where m comes from rho*V and
+# a comes from kinematics) require Round 1+ to ask about multiple symbols
+# at once. The 8B fast model handles the first item well, then loses the
+# second item off its attention budget — producing `llm_omitted_item`
+# events. Per-item batching prevents this because each call asks about
+# exactly one symbol.
+#
+# Modes:
+#   "auto"   — single if len(round_data) > 1, else all (default)
+#   "all"    — one LLM call covering all items (v7.1.2 and earlier behavior)
+#   "single" — one LLM call per item, regardless of count
+STAGE2_BATCH_MODE = os.getenv("STAGE2_BATCH_MODE", "auto")
 GROQ_TEMPERATURE = 0.1
 
 # ── Implicit constants catalog ─────────────────────────────────────────────────

@@ -44,25 +44,39 @@ def get_landing_candidates(
     allowed_domains:   Optional[set] = None,
     retriever          = None,  # Retriever | None
     rag_top_k:         int   = 5,
+    known_symbols:     Optional[set] = None,  # v7.1.4
+    round_num:         int   = 0,             # v7.1.4
 ) -> list[dict]:
     """
-    Round-0 candidates for the initial unknown. Combines two sources:
+    Candidates for one frontier item. Combines two sources:
 
-      1. SYMBOL: graph_index.candidates_for_quantity(target_symbol, ...)
-         — every equation containing target_symbol, dimension-filtered,
-         optionally domain-filtered (with the same fallback-to-full rule
-         as before).
-      2. SEMANTIC: retriever.search(search_query, top_k=rag_top_k)
-         — every equation whose rag_text hybrid-matches the scenario.
-         Skipped silently if retriever is None.
+      1. SYMBOL: every equation containing target_symbol, dimension-filtered,
+         optionally domain-filtered.
+      2. SEMANTIC: top-K equations whose rag_text hybrid-matches the
+         search_query. Skipped silently if retriever is None.
 
-    Each candidate has a 'landing_source' field tagged 'symbol', 'semantic',
-    or 'both' so Stage 2's prompt can tell the LLM what flagged it. This is
-    informational for the model only — it does not affect ranking.
+    v7.1.4 — knowns-overlap re-ranking for Round 1+:
 
-    Returns: list of equation node dicts (each augmented with landing_source).
-    Order: symbol candidates first (preserves v6 ordering for that subset),
-    then semantic-only candidates ordered by hybrid score.
+      When round_num > 0 and known_symbols is non-empty, candidates are
+      re-ranked so that equations sharing more variables with the known set
+      bubble to the top. The rationale: in Round 1+, we're looking for an
+      equation that BRIDGES from known values to the target symbol. The
+      equation with the most overlap between its variables and our known
+      values is the most likely bridge.
+
+      Example: looking for 'm' with knowns = {rho, V, u, v, s}:
+        - rho = m/V         shares rho, V  → overlap 2 (winner)
+        - p = m*v           shares v       → overlap 1
+        - K = (1/2)*m*v^2   shares v       → overlap 1
+        - F = m*a           shares nothing → overlap 0
+
+      Round 0 keeps the original ranking — there, the concept (not overlap)
+      determines fit, and the LLM is told explicitly to ignore overlap as
+      a primary signal. Applying overlap ranking in Round 0 would push
+      e.g. F = rho*V*g above F = m*a in a kinematics problem just because
+      the question gave rho and V (intended for mass derivation).
+
+    Returns: list of equation node dicts, each augmented with landing_source.
     """
     # --- Source 1: symbol-table candidates (v6 behavior, exactly) ---
     symbol_candidates = graph_index.candidates_for_quantity(
@@ -144,6 +158,19 @@ def get_landing_candidates(
         tagged["_retrieval_score"] = r["score"]
         out.append(tagged)
         semantic_only_added += 1
+
+    # v7.1.4: knowns-overlap re-ranking for Round 1+
+    # In Round 1+ we're looking for an equation that BRIDGES known values to
+    # the target. Equations whose variables overlap more with what's already
+    # known are more likely to be that bridge. We re-rank candidates by
+    # overlap count (descending) while preserving original order as the
+    # tie-breaker via stable sort.
+    if round_num > 0 and known_symbols:
+        def overlap(node):
+            return len(set(node.get("variables", {}).keys()) & known_symbols)
+        # Stable sort: equations with more knowns-overlap float up; ties keep
+        # the prior order (symbol-source first, then semantic-source).
+        out.sort(key=overlap, reverse=True)
 
     return out
 

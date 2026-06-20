@@ -1273,25 +1273,110 @@ def test_stage1_prompt_has_concept_level_search_query_guidance():
     print("[test_stage1_prompt_has_concept_level_search_query_guidance] PASSED")
 
 
-def test_format_candidate_no_longer_truncates_rag_text():
-    """v7.1: the 120-char rag_text truncation in _format_candidate was
-    appropriate when rag_texts were templated boilerplate. With concept-
-    level rag_texts, the truncation throws away the disambiguation signal.
-    v7.1 removes it."""
+def test_format_candidate_uses_concept_not_full_rag_text():
+    """v7.1.4: candidate format drops the full rag_text and uses a short
+    concept name instead. The 8B model gets a clean, focused prompt.
+
+    Replaces the v7.1 test that verified the 120-char truncation was gone —
+    in v7.1.4 we drop rag_text entirely, replacing it with the concept_name
+    surfaced by apply_exemplars_only or extracted from the rag_text head."""
     from solver.llm_interface import _format_candidate
-    long_rag = "x" * 800  # well over the old 120-char cap
     eq = {
         "id": "test_id",
         "equation_str": "F = m*a",
-        "rag_text": long_rag,
+        "rag_text": "Newton's Second Law of Motion: the foundational dynamics relationship. " + ("x" * 600),
+        "concept_name": "Newton's Second Law of Motion",
         "conditions": ["c1", "c2"],
-        "variables": {"F": {"name": "force", "unit": "N", "dimension": "MLT-2"}},
+        "variables": {
+            "F": {"name": "force", "unit": "N", "dimension": "MLT-2"},
+            "m": {"name": "mass", "unit": "kg", "dimension": "M"},
+        },
     }
     out = _format_candidate(eq)
-    assert out["description"] == long_rag, \
-        f"rag_text should not be truncated; got {len(out['description'])} chars from {len(long_rag)} input"
-    print(f"[test_format_candidate_no_longer_truncates_rag_text] "
-          f"{len(out['description'])} chars preserved — PASSED")
+    assert "description" not in out, "v7.1.4 drops the description (full rag_text) field"
+    assert "concept" in out, "v7.1.4 should add a concept field"
+    assert out["concept"] == "Newton's Second Law of Motion"
+    assert len(out["concept"]) < 80, f"concept should be short, got {len(out['concept'])} chars"
+    assert out["equation"] == "F = m*a"
+    assert "F" in out["variables"] and "m" in out["variables"]
+    print(f"[test_format_candidate_uses_concept_not_full_rag_text] "
+          f"concept={out['concept']!r} — PASSED")
+
+
+def test_format_candidate_extracts_concept_from_rag_text_when_no_concept_name():
+    """v7.1.4: if a node doesn't have concept_name (legacy graph, exemplars
+    not re-applied), fall back to extracting the concept from the rag_text
+    head. Our authored rag_texts open with '<Concept Name>: ...' or
+    '<Concept Name>. ...'."""
+    from solver.llm_interface import _format_candidate, _extract_concept
+    eq = {
+        "id": "test",
+        "equation_str": "F = q1*q2/(4*pi*epsilon_0*r**2)",
+        "rag_text": "Coulomb's Law: the electrostatic force between two point charges. Apply when...",
+        "variables": {"F": {"name": "force", "unit": "N"}},
+    }
+    out = _format_candidate(eq)
+    assert out["concept"] == "Coulomb's Law"
+    eq2 = dict(eq); eq2["rag_text"] = "Archimedes' Principle for the buoyant force. Apply when..."
+    assert _extract_concept(eq2) == "Archimedes' Principle for the buoyant force"
+    print("[test_format_candidate_extracts_concept_from_rag_text_when_no_concept_name] PASSED")
+
+
+def test_landing_overlap_ranking_promotes_bridge_equation():
+    """v7.1.4: in Round 1+, candidates are re-ranked by overlap with
+    known_symbols. Bridging equations (those whose variables overlap most
+    with what we already have) bubble to the top.
+
+    Scenario: looking for 'm' with knowns = {rho, V}. The equation
+    rho = m/V shares {rho, V} (overlap 2). Other mass-containing equations
+    share fewer. Overlap ranking must put rho = m/V first."""
+    from solver.landing import get_landing_candidates
+
+    class StubGraph:
+        def candidates_for_quantity(self, **kwargs):
+            return [
+                {"id": "p_eq",   "variables": {"p": {}, "m": {}, "v": {}}},
+                {"id": "rho_eq", "variables": {"rho": {}, "m": {}, "V": {}}},
+                {"id": "K_eq",   "variables": {"K": {}, "m": {}, "v": {}}},
+            ]
+
+    ranked = get_landing_candidates(
+        graph_index=StubGraph(),
+        target_symbol="m", target_name="mass", target_dimension="M",
+        search_query="", visited_eqs=set(), retriever=None,
+        known_symbols={"rho", "V"}, round_num=1,
+    )
+    ids = [c["id"] for c in ranked]
+    assert ids[0] == "rho_eq", \
+        f"bridge equation should rank first in Round 1+; got order: {ids}"
+
+    # Round 0 → must NOT re-rank by overlap
+    unranked = get_landing_candidates(
+        graph_index=StubGraph(),
+        target_symbol="m", target_name="mass", target_dimension="M",
+        search_query="", visited_eqs=set(), retriever=None,
+        known_symbols={"rho", "V"}, round_num=0,
+    )
+    assert [c["id"] for c in unranked] == ["p_eq", "rho_eq", "K_eq"], \
+        "Round 0 must NOT re-rank by overlap (concept-based ranking only)"
+    print("[test_landing_overlap_ranking_promotes_bridge_equation] PASSED")
+
+
+def test_round_select_prompt_states_derivability_principle():
+    """v7.1.4: Stage 2 prompt must explicitly tell the LLM not to reject
+    an equation because its variables don't appear in the question.
+    Multi-equation chains are derivable — this must be a stated principle."""
+    from solver.llm_interface import ROUND_SELECT_SYSTEM
+    must_have = [
+        "derivability",          # principle named
+        "DO NOT reject",         # explicit anti-pattern
+        "chain",                 # chaining concept
+        "Density = m/V",         # F=ma example
+        "v = u + a*t",           # KE example
+    ]
+    missing = [m for m in must_have if m not in ROUND_SELECT_SYSTEM]
+    assert not missing, f"Stage 2 prompt missing derivability markers: {missing}"
+    print("[test_round_select_prompt_states_derivability_principle] PASSED")
 
 
 def test_exemplar_concept_names_are_unique():
@@ -1312,6 +1397,248 @@ def test_exemplar_concept_names_are_unique():
     assert not dupes, f"Duplicate concept_names violate uniqueness: {dupes}"
     print(f"[test_exemplar_concept_names_are_unique] "
           f"{len(set(names))} distinct concepts across {len(names)} exemplars — PASSED")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v7.1.2 — Logging and Stage 2 model switch
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_solver_log_emits_json_lines():
+    """v7.1.2: solver.solver_log writes one JSON object per line to logs/solver.log,
+    with timestamp, level, event, and any structured fields the caller passed."""
+    import json
+    from pathlib import Path
+    from solver.solver_log import log
+    log("test_v712_event", question="test", round_num=99, candidate_ids=["a","b"])
+    log_path = Path(__file__).parent.parent / "logs" / "solver.log"
+    assert log_path.exists(), f"log file not created at {log_path}"
+    # Last line of the log should be our event
+    last = log_path.read_text().splitlines()[-1]
+    obj = json.loads(last)  # must parse as JSON
+    assert obj["event"] == "test_v712_event"
+    assert obj["question"] == "test"
+    assert obj["round_num"] == 99
+    assert obj["candidate_ids"] == ["a", "b"]
+    assert "ts" in obj and "level" in obj
+    print("[test_solver_log_emits_json_lines] PASSED")
+
+
+def test_stage2_model_env_override():
+    """v7.1.2: STAGE2_MODEL env var overrides the default. Empty/unset falls back
+    to MODEL_FAST. This is the documented escape hatch when the 8B model
+    can't follow the agentic-chain reasoning v7.1's concept rag_texts demand."""
+    import os
+    import importlib
+    # Save original env
+    saved = os.environ.get("STAGE2_MODEL")
+    try:
+        os.environ["STAGE2_MODEL"] = "llama-3.3-70b-versatile"
+        import config
+        importlib.reload(config)
+        assert config.STAGE2_MODEL == "llama-3.3-70b-versatile", \
+            f"env override didn't take: STAGE2_MODEL={config.STAGE2_MODEL}"
+
+        del os.environ["STAGE2_MODEL"]
+        importlib.reload(config)
+        assert config.STAGE2_MODEL == config.MODEL_FAST, \
+            f"default not MODEL_FAST: {config.STAGE2_MODEL}"
+    finally:
+        if saved is not None:
+            os.environ["STAGE2_MODEL"] = saved
+        elif "STAGE2_MODEL" in os.environ:
+            del os.environ["STAGE2_MODEL"]
+        # Reload config one more time to leave global state clean for other tests
+        import config
+        importlib.reload(config)
+    print("[test_stage2_model_env_override] PASSED")
+
+
+def test_stage2_batch_mode_dispatches_per_item_for_multi_item_rounds():
+    """v7.1.3: When STAGE2_BATCH_MODE='auto' (default) and a round has more
+    than one frontier item, call_round_selector splits into per-item LLM
+    calls. With one item, it batches as before.
+
+    The chained-problem failure mode (llm_omitted_item) happens specifically
+    when the 8B model has to address multiple items in one call. Per-item
+    batching eliminates the structural cause."""
+    import os
+    import importlib
+    from solver.frontier_resolver import FrontierItem
+    saved = os.environ.get("STAGE2_BATCH_MODE")
+
+    try:
+        os.environ["STAGE2_BATCH_MODE"] = "auto"
+        # Reload to pick up env
+        import config
+        importlib.reload(config)
+        import solver.llm_interface as li
+        importlib.reload(li)
+
+        # Stub the inner call helper to record how many times it's invoked
+        calls_made = []
+        def stub_call(question, available, round_data, round_num=0,
+                      sub_index=None, sub_total=None):
+            calls_made.append({
+                "n_items": len(round_data),
+                "sub_index": sub_index,
+                "sub_total": sub_total,
+                "symbols": [rd["frontier_item"].symbol for rd in round_data],
+            })
+            return [{
+                "frontier_item": rd["frontier_item"], "chosen_eq": None,
+                "reason": "stub", "conditions_concern": None,
+                "deferred": False, "_candidates": rd["candidates"],
+                "fallback_used": None,
+            } for rd in round_data]
+
+        li._round_select_call = stub_call
+
+        # Single-item round → should batch (one call covering 1 item)
+        fi_F = FrontierItem(symbol="F", name="force", unit="N", dimension="MLT-2")
+        single_round = [{"frontier_item": fi_F, "candidates": [{"id":"e1","equation_str":""}]}]
+        calls_made.clear()
+        li.call_round_selector("q", {}, single_round, round_num=0)
+        assert len(calls_made) == 1, \
+            f"single-item round should make 1 call, made {len(calls_made)}"
+        assert calls_made[0]["n_items"] == 1
+        assert calls_made[0]["sub_index"] is None, "no sub-indexing for single-item rounds"
+
+        # Multi-item round → should split into per-item calls
+        fi_m = FrontierItem(symbol="m", name="mass", unit="kg", dimension="M")
+        fi_a = FrontierItem(symbol="a", name="acceleration", unit="m/s^2", dimension="LT-2")
+        multi_round = [
+            {"frontier_item": fi_m, "candidates": [{"id":"e1","equation_str":""}]},
+            {"frontier_item": fi_a, "candidates": [{"id":"e2","equation_str":""}]},
+        ]
+        calls_made.clear()
+        li.call_round_selector("q", {}, multi_round, round_num=1)
+        assert len(calls_made) == 2, \
+            f"multi-item round should make 2 calls in auto mode, made {len(calls_made)}"
+        for i, c in enumerate(calls_made):
+            assert c["n_items"] == 1, f"each per-item call should have 1 item, got {c['n_items']}"
+            assert c["sub_index"] == i
+            assert c["sub_total"] == 2
+
+    finally:
+        if saved is not None:
+            os.environ["STAGE2_BATCH_MODE"] = saved
+        elif "STAGE2_BATCH_MODE" in os.environ:
+            del os.environ["STAGE2_BATCH_MODE"]
+        # Reload everything to leave clean global state
+        import config
+        importlib.reload(config)
+        import solver.llm_interface
+        importlib.reload(solver.llm_interface)
+    print("[test_stage2_batch_mode_dispatches_per_item_for_multi_item_rounds] PASSED")
+
+
+def test_stage2_filters_unused_constants_from_prompt():
+    """v7.1.5: the ALREADY KNOWN section must NOT list universal constants
+    that no candidate equation uses. A kinematics round should not show the
+    LLM Planck's constant, Boltzmann's constant, speed of light, etc.
+
+    This was a real bug: every Stage 2 prompt listed all 10 universal
+    constants regardless of relevance, wasting ~300 bytes per prompt and
+    accelerating TPM exhaustion on the Groq free tier."""
+    import importlib
+    import config, solver.llm_interface as li
+    importlib.reload(config); importlib.reload(li)
+    from solver.frontier_resolver import FrontierItem
+
+    captured = {}
+    def fake_call(model, system, user, temperature=0.1, stage="?", _attempt=1):
+        captured["user"] = user
+        return '{"selections":[{"needed_symbol":"a","decision":"none","reason":"x"}]}'
+    li._call = fake_call
+
+    available = {
+        "v": {"value": 30, "unit": "m/s", "name": "velocity"},
+        "s": {"value": 40, "unit": "m", "name": "displacement"},
+        "h_planck": {"value": 6.626e-34, "unit": "J·s", "name": "Planck constant"},
+        "k_B": {"value": 1.38e-23, "unit": "J/K", "name": "Boltzmann constant"},
+        "c": {"value": 3e8, "unit": "m/s", "name": "speed of light"},
+        "NA": {"value": 6.022e23, "unit": "1/mol", "name": "Avogadro number"},
+    }
+    fi_a = FrontierItem(symbol="a", name="acceleration", unit="m/s^2", dimension="LT-2")
+    cand = {"id": "kinematics_v2_u2_2as", "equation_str": "v**2 = u**2 + 2*a*s",
+            "concept_name": "Time-Free Kinematic Relation",
+            "variables": {"v": {"name":"velocity","unit":"m/s"},
+                          "u": {"name":"initial velocity","unit":"m/s"},
+                          "a": {"name":"acceleration","unit":"m/s^2"},
+                          "s": {"name":"displacement","unit":"m"}}}
+    round_data = [{"frontier_item": fi_a, "candidates": [cand]}]
+
+    li.call_round_selector("find acceleration", available, round_data, round_num=1)
+
+    known_section = captured["user"].split("NEEDED QUANTITIES")[0]
+    for c in ("Planck", "Boltzmann", "Avogadro", "speed of light"):
+        assert c not in known_section, \
+            f"unused constant {c!r} should be filtered from the prompt, but it's present"
+    # The question-relevant givens must still be there
+    assert "v (velocity)" in known_section
+    assert "s (displacement)" in known_section
+
+    # restore clean global state
+    importlib.reload(li)
+    print("[test_stage2_filters_unused_constants_from_prompt] PASSED")
+
+
+def test_stage2_detects_hallucinated_symbol():
+    """v7.1.5: when the LLM answers about a symbol we didn't ask for, the
+    code logs it as a hallucination rather than silently treating the asked
+    symbol as omitted. Observed in the live log: Round 2 asked for 'u', the
+    8B model returned needed_symbol='a'."""
+    import importlib, json
+    from pathlib import Path
+    import config, solver.llm_interface as li
+    importlib.reload(config); importlib.reload(li)
+    from solver.frontier_resolver import FrontierItem
+
+    def fake_call(model, system, user, temperature=0.1, stage="?", _attempt=1):
+        # Asked about 'u', but answer is about 'a' — a hallucination
+        return '{"selections":[{"needed_symbol":"a","decision":"pick","chosen_eq_id":"kinematics_v_u_at","reason":"x"}]}'
+    li._call = fake_call
+
+    log_path = Path(__file__).parent.parent / "logs" / "solver.log"
+    if log_path.exists():
+        log_path.write_text("")  # clear
+
+    fi_u = FrontierItem(symbol="u", name="initial velocity", unit="m/s", dimension="LT-1")
+    cand = {"id": "kinematics_v_u_at", "equation_str": "v = u + a*t",
+            "concept_name": "Time-Velocity Kinematic Relation",
+            "variables": {"u": {"name":"initial velocity","unit":"m/s"}}}
+    round_data = [{"frontier_item": fi_u, "candidates": [cand]}]
+    li.call_round_selector("find u", {"v": {"value":30,"unit":"m/s","name":"velocity"}},
+                           round_data, round_num=2)
+
+    # Check the log has a hallucination event
+    events = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
+    halluc = [e for e in events if e.get("event") == "stage2_hallucinated_symbol"]
+    assert halluc, "expected a stage2_hallucinated_symbol log event"
+    assert "a" in halluc[-1]["hallucinated"]
+    assert "u" in halluc[-1]["asked_for"]
+
+    importlib.reload(li)
+    print("[test_stage2_detects_hallucinated_symbol] PASSED")
+
+
+def test_stage1_prompt_has_implicit_given_phrase_rules():
+    """v7.1.5: Stage 1 prompt must instruct the model to extract numeric
+    values from physics PHRASES — 'starts from rest' → u=0, etc. The live
+    log showed the 8B model dropping u=0 about half the time, which broke
+    chained kinematics."""
+    from solver.llm_interface import _build_parse_system
+    prompt = _build_parse_system({"kinematics", "laws_of_motion"})
+    must_have = [
+        "starts from rest",
+        "u = 0",
+        "comes to rest",
+        "dropped",
+        "IMPLICIT GIVENS",
+    ]
+    missing = [m for m in must_have if m not in prompt]
+    assert not missing, f"Stage 1 prompt missing implicit-given rules: {missing}"
+    print("[test_stage1_prompt_has_implicit_given_phrase_rules] PASSED")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1360,8 +1687,20 @@ def run_all():
         test_exemplars_applied_to_graph,
         test_exemplar_rag_texts_are_concept_level,
         test_stage1_prompt_has_concept_level_search_query_guidance,
-        test_format_candidate_no_longer_truncates_rag_text,
+        test_format_candidate_uses_concept_not_full_rag_text,
+        test_format_candidate_extracts_concept_from_rag_text_when_no_concept_name,
+        test_landing_overlap_ranking_promotes_bridge_equation,
+        test_round_select_prompt_states_derivability_principle,
         test_exemplar_concept_names_are_unique,
+        # v7.1.2 additions
+        test_solver_log_emits_json_lines,
+        test_stage2_model_env_override,
+        # v7.1.3 additions
+        test_stage2_batch_mode_dispatches_per_item_for_multi_item_rounds,
+        # v7.1.5 additions
+        test_stage2_filters_unused_constants_from_prompt,
+        test_stage2_detects_hallucinated_symbol,
+        test_stage1_prompt_has_implicit_given_phrase_rules,
     ]
     passed = failed = 0
     for t in tests:

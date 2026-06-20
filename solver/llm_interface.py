@@ -6,30 +6,98 @@ Stage 1  parse_question()       — extended: gives, target, dimensions, implici
 Stage 2  call_round_selector()  — batched conceptual equation selection per round
 Stage 4  narrate_from_trace()   — trace-based student-facing narration
 Stage 5  generate_distractors() — 3 wrong MCQ options (unchanged)
+
+v7.1.2: every LLM call is logged through solver.solver_log. Look in
+logs/solver.log for the trace.
 """
 from __future__ import annotations
 import json
 import re
+import time
 from groq import Groq
 from config import (
     GROQ_API_KEY, MODEL_FAST, MODEL_SMART, GROQ_TEMPERATURE,
     IMPLICIT_CONSTANTS_CATALOG,
 )
 from solver.frontier_resolver import FrontierItem
+from solver.solver_log import log, log_error
+from config import STAGE2_MODEL, STAGE2_BATCH_MODE
 
 client = Groq(api_key=GROQ_API_KEY)
 
 
-def _call(model: str, system: str, user: str, temperature: float = GROQ_TEMPERATURE) -> str:
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user},
-        ],
-    )
-    return resp.choices[0].message.content.strip()
+def _call(model: str, system: str, user: str, temperature: float = GROQ_TEMPERATURE,
+          stage: str = "?", _attempt: int = 1) -> str:
+    """
+    Wrapped Groq call. Logs request and response (with latency) through
+    solver.solver_log. Rate-limit errors and other Groq exceptions get
+    log_error'd before re-raising.
+
+    v7.1.5: rate-limit retry with backoff.
+    Groq's 429 response includes "Please try again in Xms" or "Xs". We parse
+    that hint, sleep the indicated duration (capped at 30s), and retry up to
+    3 times. Without this, ONE rate limit anywhere in a test run killed
+    every subsequent test. Now a hit on the free-tier TPM cap just slows us
+    down — it doesn't crash the run.
+    """
+    MAX_RETRIES = 3
+    log("llm_request",
+        stage=stage, model=model, temperature=temperature,
+        system_len=len(system), user_len=len(user),
+        attempt=_attempt,
+        user_preview=user[:500])
+    t0 = time.perf_counter()
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=temperature,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        emsg = str(e)
+        is_rate_limit = "429" in emsg or "rate_limit" in emsg.lower() or "tpm" in emsg.lower()
+
+        # v7.1.5: parse Groq's retry-after hint from the error message.
+        # Format: "Please try again in 410ms" or "Please try again in 2.5s".
+        # Default 5s if not present.
+        retry_after_s = 5.0
+        if is_rate_limit:
+            m_ms = re.search(r"try again in (\d+(?:\.\d+)?)ms", emsg)
+            m_s  = re.search(r"try again in (\d+(?:\.\d+)?)s\b", emsg)
+            if m_ms:
+                retry_after_s = float(m_ms.group(1)) / 1000.0
+            elif m_s:
+                retry_after_s = float(m_s.group(1))
+            retry_after_s = min(retry_after_s + 0.5, 30.0)  # +0.5s buffer, 30s cap
+
+        log_error("llm_error",
+                  exc=e, stage=stage, model=model, elapsed_ms=elapsed_ms,
+                  is_rate_limit=is_rate_limit,
+                  attempt=_attempt,
+                  retry_after_s=retry_after_s if is_rate_limit else None,
+                  will_retry=is_rate_limit and _attempt < MAX_RETRIES,
+                  error_msg=emsg[:1000])
+
+        if is_rate_limit and _attempt < MAX_RETRIES:
+            time.sleep(retry_after_s)
+            return _call(model, system, user, temperature, stage, _attempt + 1)
+        raise
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    content = resp.choices[0].message.content.strip()
+    usage = getattr(resp, "usage", None)
+    log("llm_response",
+        stage=stage, model=model, elapsed_ms=elapsed_ms,
+        attempt=_attempt,
+        response_chars=len(content),
+        prompt_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+        completion_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+        total_tokens=getattr(usage, "total_tokens", None) if usage else None,
+        response_preview=content[:1000])
+    return content
 
 
 def _extract_json(text: str) -> dict | list:
@@ -113,6 +181,26 @@ SYMBOLS
 
 - A "distance traveled" or "path length" in motion is also displacement s,
   not d or x.
+
+IMPLICIT GIVENS — extract values from PHRASES, not just numbers
+- "starts from rest" → u = 0 (initial velocity is zero). This is ALWAYS
+  an explicit given, not a missing variable. Stage 2 cannot reason about
+  rest as a kinematic state; it needs the numeric u=0.
+- "comes to rest" / "comes to a stop" → v = 0 (final velocity is zero).
+- "released from rest" → u = 0.
+- "dropped" / "released" / "let fall" → u = 0 (the object had zero velocity
+  when released).
+- "from a height of H" used in motion context → s = H AND u = 0 (the
+  object is released, so initial velocity is zero; the height is the
+  displacement of fall).
+- "horizontally" combined with a launch → vertical component of u is 0.
+- "uniform motion" / "constant velocity" → a = 0.
+- "rests on" / "at rest on a surface" (static scenario, no motion asked)
+  → does not imply v=0 unless motion is involved in the question.
+
+Always parse phrase-implied numerics into the given dict. The downstream
+solver treats missing-symbol and known-zero-value DIFFERENTLY: known-zero
+unblocks chains, missing forces an extra round that often fails.
 
 DIMENSIONAL FORMULAS
 - M=mass, L=length, T=time, A=current, K=temperature, N=amount of substance.
@@ -219,10 +307,12 @@ def parse_question(question: str, valid_domains: set[str] | None = None) -> dict
                                         fallback; never a hard exclusion.
     """
     system = _build_parse_system(valid_domains or set())
-    raw = _call(MODEL_FAST, system, question)
+    log("stage1_entry", question=question, n_valid_domains=len(valid_domains or set()))
+    raw = _call(MODEL_FAST, system, question, stage="stage1_parse")
     try:
         parsed = _extract_json(raw)
     except (json.JSONDecodeError, ValueError) as e:
+        log_error("stage1_parse_failed", exc=e, raw_preview=raw[:600])
         raise ValueError(f"Stage 1 parse failed. Raw output:\n{raw}\nError: {e}")
 
     # Inject implicit constants the LLM flagged based on scenario cues
@@ -244,6 +334,13 @@ def parse_question(question: str, valid_domains: set[str] | None = None) -> dict
 
     parsed.setdefault("likely_domains", [])
     parsed.setdefault("search_query", "")
+    log("stage1_parsed",
+        n_given=len(parsed.get("given", {})),
+        given_symbols=list(parsed.get("given", {}).keys()),
+        unknown_symbol=parsed.get("unknown", {}).get("symbol"),
+        implicit_constants=parsed.get("implicit_constants", []),
+        likely_domains=parsed.get("likely_domains", []),
+        search_query=parsed.get("search_query", ""))
     return parsed
 
 
@@ -261,44 +358,97 @@ You are NOT computing anything. SymPy handles all arithmetic.
 Your decisions are purely about which equation describes what is PHYSICALLY
 HAPPENING in this problem.
 
-## Decision rules
+## What you see per candidate
 
-1. READ the original question carefully — understand the physical scenario.
-2. For each needed quantity, ask:
-   - Which candidate equation describes the physics of THIS problem?
-   - Does the equation's description match what the scenario is about?
-   - Do the equation's conditions hold for this scenario?
-3. DO NOT rank candidates by "how many variables are already known."
-   An equation that is immediately solvable may still be the WRONG physics.
-   Example: if a body accelerates (kinematics), F=m*a is correct even if
-   F=rho*V*g (buoyant force) happens to have more known variables — the
-   problem is not about fluid submersion.
-4. If a candidate's conditions are clearly violated, flag it AND pick the
-   next-best candidate instead. Only mark conditions_concern if you are
-   still choosing that equation despite the concern.
-5. If you believe a needed quantity will appear as a BYPRODUCT of an
-   equation you're choosing for ANOTHER frontier item this round, say
-   "defer" for it. Use this only when genuinely redundant.
-6. If NONE of the candidates physically fits — they're all wrong domain or
-   wrong physics for this scenario — say "decision": "none". Do not force
-   a pick. The system will surface this as an unresolved item and decide
-   what to do next. Picking a clearly-wrong equation is worse than admitting
-   no candidate fits.
+  - id          : the equation's stable identifier (use this in chosen_eq_id)
+  - equation    : the symbolic form, e.g. "F = m*a"
+  - concept     : a short identifier of WHAT THIS EQUATION IS (e.g. "Newton's
+                  Second Law of Motion", "Archimedes' Principle (Buoyant
+                  Force)", "Time-Free Kinematic Relation"). This is the
+                  equation's physics identity — use it to tell candidates
+                  apart even when their symbols look similar.
+  - variables   : the equation's variables (other than what's already known)
+                  with their physical names and units.
+
+You have physics knowledge. The concept name and the equation form,
+combined with what each variable means, are enough for you to reason about
+which equation fits.
+
+## Decision principle 1: pick by CONCEPT, not by surface-symbol match
+
+The concept name tells you what the equation IS. The question's story tells
+you what physics is happening. Pick the equation whose concept matches the
+story.
+
+  - A body accelerating in air or on a surface → "Newton's Second Law of
+    Motion" (F = m*a). The body's mass and acceleration may not appear
+    directly as numbers in the question — that's fine, see Decision Principle 2.
+  - A body submerged in a fluid, with apparent weight or floating → "Archimedes'
+    Principle" (F = rho*V*g).
+  - Two point charges attracting/repelling → "Coulomb's Law".
+  - A photon's energy from frequency or wavelength → "Photon Energy
+    (Planck-Einstein Relation)".
+
+Equations from different concepts can share variables. F = m*a and
+F = rho*V*g both have F. Their physics is completely different. The concept
+name disambiguates.
+
+## Decision principle 2: derivability, not direct match
+
+DO NOT reject an equation because its variables don't appear in the question's
+given values.
+
+The pipeline solves problems in CHAINS. An equation is the right pick if its
+needed variables can be derived from what's known — directly or through other
+equations in subsequent rounds.
+
+Examples:
+
+  Question gives density (rho) and volume (V); asks for force.
+  Candidate equations for F include "Newton's Second Law" (F = m*a).
+  F = m*a needs m and a — neither is in the question's given values.
+  But m can be derived from rho and V via Density = m/V.
+  And a can be derived from kinematics (e.g., v^2 = u^2 + 2*a*s) if the
+  question also gives initial velocity, final velocity, displacement.
+  So F = m*a IS the right pick. The downstream rounds will resolve m and a.
+
+  Question gives initial velocity, acceleration, and time; asks for kinetic energy.
+  Candidate equations for K include K = (1/2)*m*v^2.
+  v is not directly in the question, but it's derivable from v = u + a*t.
+  K = (1/2)*m*v^2 IS the right pick. Round 1 will resolve v.
+
+When in doubt, ask: "Is there a plausible physics chain from what the
+question gives to what this equation needs?" If yes, this is a valid pick.
+
+## Decision principle 3: don't pick by "most variables known"
+
+An equation that happens to have many of its variables already known is NOT
+automatically the right pick. The CONCEPT must match the physics of the
+question. Example: in a kinematics question, F = rho*V*g (buoyancy) might
+have rho and V already known — but the question isn't about a submerged body,
+so it's the wrong concept, full stop.
+
+## Decision principle 4: conditions
+
+If a candidate's conditions are clearly violated (e.g., "small-angle
+approximation" for a wide-swing pendulum), flag it via conditions_concern.
+Pick the next-best concept-matching candidate when conditions are violated.
+
+## Decision principle 5: defer or none
+
+If a needed quantity will appear as a BYPRODUCT of an equation you're
+choosing for ANOTHER frontier item this round, say "defer".
+
+If NO candidate's concept fits the question's physics, say "decision": "none".
+Do not force a wrong pick. Picking a clearly-wrong equation is worse than
+admitting no candidate fits.
 
 ## How candidates were surfaced
 
-Each candidate has a "landing_source" field:
-  - "symbol": surfaced because it contains the needed symbol. Most reliable
-    structural signal; appears in v6 too.
-  - "semantic": surfaced because its description matched the question
-    scenario via vector search. Use this when the question's natural
-    vocabulary differs from the equation's stored symbols (e.g. the
-    question says "height" but the kinematic equation uses "displacement"
-    for the same physical thing — semantic landing catches this where
-    symbol matching can't).
-  - "both": surfaced by both routes. Strongest signal — but only a signal,
-    not a forced choice; still pick by physical fit.
-Use landing_source as context, not as a tie-breaker. The physics decides.
+Each candidate has a "landing_source" field — informational, not a ranking:
+  - "symbol": contains the needed symbol (most common path).
+  - "semantic": rag_text matched the question scenario via vector search.
+  - "both": surfaced by both routes. Strong signal, still pick by physics.
 
 ## Response format — ONLY valid JSON, no prose outside it
 
@@ -308,7 +458,7 @@ Use landing_source as context, not as a tie-breaker. The physics decides.
       "needed_symbol": "<symbol>",
       "decision": "pick",
       "chosen_eq_id": "<equation id from the candidates>",
-      "reason": "<one paragraph explaining why THIS equation fits the physical scenario, NOT just 'most variables known'>",
+      "reason": "<one paragraph explaining why THIS concept fits the physics scenario, AND why the equation's other variables are derivable from what's given>",
       "conditions_concern": "<condition text if a stated condition may not hold, else null>"
     }
   ]
@@ -319,41 +469,69 @@ For no-fit items:   {"needed_symbol": "...", "decision": "none",  "reason": "...
 """
 
 
+def _extract_concept(eq: dict) -> str:
+    """
+    Get the equation's concept name. Order:
+      1. node['concept_name'] if apply_exemplars_only.py wrote it
+      2. first sentence of rag_text, split on ':' or '.'
+      3. empty string
+
+    The concept name is the equation's unique physics identifier — the
+    short label like "Newton's Second Law of Motion" that lets the LLM
+    disambiguate candidates without needing the full rag_text.
+    """
+    concept = eq.get("concept_name", "")
+    if concept:
+        return concept
+    rag = eq.get("rag_text", "")
+    if not rag:
+        return ""
+    # Our hand-authored rag_texts open with "<Concept Name>: ..." or
+    # "<Concept Name>. ...". Take everything up to the first ':' or first
+    # '. ' (period + space) as the concept name.
+    for sep in (":", ". "):
+        idx = rag.find(sep)
+        if idx > 0 and idx < 120:  # don't take whole-paragraph as concept
+            return rag[:idx].strip()
+    return rag[:80]  # last-resort cap
+
+
 def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
     """
-    Compact but complete representation of an equation for the LLM prompt.
-    `known_symbols`: variables already shown in the "ALREADY KNOWN" section —
-    excluded here since repeating them in every single candidate is pure
-    redundancy, not signal. The symbol being solved for is never in
-    known_symbols by construction (it wouldn't be a frontier item otherwise),
-    so it always survives this filter.
+    Compact representation of an equation for the Stage 2 LLM prompt.
 
-    v7.1: rag_text is no longer truncated. v6 capped it at 120 chars because
-    the rag_texts were templated boilerplate where the first sentence was a
-    domain header shared across all equations in that domain — i.e. the
-    truncated portion had no disambiguation value. After the v7.1 rewrite,
-    each rag_text is a concept-level identifier (~400-1200 chars) where the
-    full content is essential for the LLM's physics judgment. We pay the
-    tokens because the content now earns them.
+    v7.1.4 change: the full rag_text is no longer included. With v7.1.1's
+    concept-level rag_texts (~600 chars each), surfacing all of them across
+    5 candidates per item × 2 items per round was a ~6000-char token budget
+    just for descriptions — which the 8B fast model couldn't reliably handle.
+    The user's observation: the LLM already has physics knowledge; we don't
+    need to teach it Newton's Second Law in every prompt. We just need to
+    name the concept clearly enough to disambiguate from neighbors.
 
-    v7: surfaces `landing_source` (added by solver.landing.get_landing_candidates)
-    when present. The LLM reads it as context, not as a forced ranking.
+    What we ship instead is the concept_name — a short label like "Newton's
+    Second Law of Motion" — plus the equation form, plus variable
+    name+unit map. The model uses its physics training to fill in the rest.
+
+    `known_symbols`: variables already in "ALREADY KNOWN". Omitted from the
+    candidate's variables map (no point re-listing what the LLM has just
+    seen in the available state).
     """
     known_symbols = known_symbols or set()
     out = {
-        "id":           eq["id"],
-        "equation":     eq["equation_str"],
-        "description":  eq.get("rag_text", ""),
-        "conditions":   eq.get("conditions", [])[:2],
-        "variables":    {
+        "id":         eq["id"],
+        "equation":   eq["equation_str"],
+        "concept":    _extract_concept(eq),
+        "variables":  {
             sym: {"name": meta["name"], "unit": meta["unit"]}
             for sym, meta in eq["variables"].items()
             if sym not in known_symbols
         },
     }
-    # Surface landing_source only when explicitly tagged — round 0 with Chroma
-    # enabled adds it; symbol-only rounds 1+ don't, and we don't want to imply
-    # a landing route for those.
+    # Conditions matter when they restrict applicability (small-angle, etc.)
+    # We still surface them but only when non-empty.
+    conds = eq.get("conditions", [])
+    if conds:
+        out["conditions"] = conds[:2]
     if eq.get("landing_source"):
         out["landing_source"] = eq["landing_source"]
     return out
@@ -386,23 +564,98 @@ def call_round_selector(
     round_num:   int = 0,
 ) -> list[dict]:
     """
-    One batched LLM call for a full frontier resolution round.
-    Returns list of selection dicts, one per frontier item.
+    Dispatches to either a single batched LLM call or a sequence of per-item
+    calls, depending on `STAGE2_BATCH_MODE` (env var, defaults to "auto").
 
-    Each selection dict:
+    v7.1.3 change: previously this function always made one LLM call covering
+    every frontier item in the round. That worked when the rag_texts were
+    templated 120-char boilerplate (v6), but with v7.1's ~600-char concept-
+    level rag_texts the prompt becomes large for multi-item rounds and the
+    fast 8B model starts dropping items off the back of its response —
+    producing `llm_omitted_item` events specifically on chained problems
+    (F=ma where m comes from rho*V and a comes from kinematics).
+
+    Splitting per-item keeps each LLM call focused on one symbol; the model
+    can't drop an item because there's only one to address. Round 0 is
+    unaffected (it almost always has one item).
+
+    Returns one selection dict per frontier item, same shape as before:
       {frontier_item, chosen_eq, reason, conditions_concern, deferred,
-       _candidates}
+       _candidates, fallback_used}
     """
-    # Build available summary (omit constants — they're always implicit)
+    # Decide mode
+    mode = STAGE2_BATCH_MODE
+    if mode not in ("auto", "all", "single"):
+        # Fall back to safe default on bad config
+        mode = "auto"
+    if mode == "auto":
+        mode = "single" if len(round_data) > 1 else "all"
+
+    log("stage2_dispatch",
+        round_num=round_num,
+        n_items=len(round_data),
+        mode=mode,
+        items=[rd["frontier_item"].symbol for rd in round_data])
+
+    if mode == "single" and len(round_data) > 1:
+        # One LLM call per frontier item.
+        results = []
+        for i, rd in enumerate(round_data):
+            results.extend(
+                _round_select_call(question, available, [rd], round_num,
+                                   sub_index=i, sub_total=len(round_data))
+            )
+        return results
+
+    # Batched: one LLM call covering everything in round_data.
+    return _round_select_call(question, available, round_data, round_num)
+
+
+def _round_select_call(
+    question:    str,
+    available:   dict[str, dict],
+    round_data:  list[dict],
+    round_num:   int = 0,
+    sub_index:   int | None = None,
+    sub_total:   int | None = None,
+) -> list[dict]:
+    """
+    The actual LLM-call helper. Builds the prompt, calls the model, parses
+    the response, and produces selection dicts for every item in
+    `round_data` (which may be one item or many).
+
+    When `sub_index`/`sub_total` are set, the log lines carry them so the
+    user can correlate per-item calls back to the round they belong to.
+    """
+    # v7.1.5: Filter constants in the ALREADY KNOWN display.
+    # Without this filter, every Stage 2 prompt listed all 10 universal
+    # constants (pi, c, G, h_planck, k_B, R_g, NA, epsilon_0, mu_0, e_charge)
+    # even when the question was pure kinematics. That's ~300 bytes of
+    # noise per prompt and contributes to TPM exhaustion on the free tier.
+    # We still keep constants in `available` for SymPy substitution
+    # downstream — we just don't show irrelevant ones to the LLM.
+    from config import UNIVERSAL_CONSTANTS
+    # The set of variables any candidate in this round actually uses
+    candidate_var_symbols: set = set()
+    for rd in round_data:
+        for eq in rd["candidates"]:
+            candidate_var_symbols.update(eq.get("variables", {}).keys())
+
     avail_lines = []
     known_symbols = set()
     for sym, meta in available.items():
         val = meta.get("value")
-        if val is not None:
-            avail_lines.append(
-                f"  {sym} ({meta.get('name', sym)}): {val} {meta.get('unit', '')}"
-            )
-            known_symbols.add(sym)
+        if val is None:
+            continue
+        # If this is a universal constant AND no candidate equation uses it,
+        # skip it. Question-given values are always shown.
+        if sym in UNIVERSAL_CONSTANTS and sym not in candidate_var_symbols:
+            known_symbols.add(sym)  # still mark as known for the candidate var filter
+            continue
+        avail_lines.append(
+            f"  {sym} ({meta.get('name', sym)}): {val} {meta.get('unit', '')}"
+        )
+        known_symbols.add(sym)
 
     # Build needed quantities section
     needed_sections = []
@@ -425,13 +678,34 @@ def call_round_selector(
         + json.dumps(needed_sections, separators=(",", ":"))
     )
 
-    raw = _call(MODEL_FAST, ROUND_SELECT_SYSTEM, user_prompt)
+    # v7.1.2/v7.1.3: log the round entry — what items are being asked for,
+    # what candidates were given for each, and what landing route surfaced
+    # them. With v7.1.3's per-item batching mode, this may fire multiple
+    # times per logical round, with sub_index/sub_total set so you can
+    # correlate them.
+    log("stage2_round_entry",
+        round_num=round_num,
+        sub_index=sub_index,
+        sub_total=sub_total,
+        items=[{
+            "symbol":           rd["frontier_item"].symbol,
+            "name":             rd["frontier_item"].name,
+            "n_candidates":     len(rd["candidates"]),
+            "candidate_ids":    [c["id"] for c in rd["candidates"]],
+            "landing_sources":  [c.get("landing_source", "?") for c in rd["candidates"]],
+        } for rd in round_data],
+        n_known=len(known_symbols))
+
+    raw = _call(STAGE2_MODEL, ROUND_SELECT_SYSTEM, user_prompt, stage="stage2_round_select")
 
     try:
         parsed = _extract_json(raw)
         selections_raw = parsed.get("selections", [])
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as parse_err:
         # Fallback: return empty selections (pipeline will treat as unresolvable)
+        log_error("stage2_json_parse_failed",
+                  exc=parse_err, round_num=round_num,
+                  raw_preview=raw[:600])
         return [
             {"frontier_item": rd["frontier_item"], "chosen_eq": None,
              "reason": f"LLM parse error: {raw[:200]}", "deferred": False,
@@ -443,6 +717,32 @@ def call_round_selector(
     # Build lookup by symbol
     rd_by_symbol = {rd["frontier_item"].symbol: rd for rd in round_data}
     result = []
+
+    # v7.1.2: log what symbols the LLM actually addressed vs. what we asked
+    # about. This catches the llm_omitted_item case at the source: if the LLM
+    # only returned selections for some items, we see exactly which ones.
+    addressed = [s.get("needed_symbol") for s in selections_raw]
+    asked = [rd["frontier_item"].symbol for rd in round_data]
+    # v7.1.5: detect HALLUCINATED symbols — the LLM answered about a symbol
+    # we didn't ask about. We saw this in the live log: Round 2 asked for 'u',
+    # the LLM returned a selection with needed_symbol="a". The previous code
+    # silently treated 'u' as omitted, hiding the actual problem. Now we
+    # explicitly log it as a hallucination so the diagnostic is clear.
+    asked_set = set(asked)
+    hallucinated = [s for s in addressed if s and s not in asked_set]
+    if hallucinated:
+        log("stage2_hallucinated_symbol",
+            round_num=round_num,
+            asked_for=asked,
+            llm_responded_about=addressed,
+            hallucinated=hallucinated)
+    log("stage2_llm_selections_received",
+        round_num=round_num,
+        asked_for=asked,
+        addressed=addressed,
+        omitted=[s for s in asked if s not in addressed],
+        hallucinated=hallucinated,
+        n_selections=len(selections_raw))
 
     for sel in selections_raw:
         sym = sel.get("needed_symbol")
@@ -491,6 +791,17 @@ def call_round_selector(
             "_candidates":        cands,
             "fallback_used":      fallback_used,
         })
+        # v7.1.2: log the per-item outcome. Filter logs for
+        # event=stage2_item_decision to see what the LLM picked or why it
+        # didn't, with the reason text it provided.
+        log("stage2_item_decision",
+            round_num=round_num,
+            symbol=fi.symbol,
+            decision=decision,
+            chosen_eq_id=(chosen_eq["id"] if chosen_eq else None),
+            fallback_used=fallback_used,
+            llm_reason=(sel.get("reason", "") or "")[:500],
+            candidate_ids=[c["id"] for c in cands])
 
     # Make sure every frontier item has a result entry. v6 silently picked
     # the first candidate here; v7 marks the item as no-pick + records why,
@@ -500,6 +811,15 @@ def call_round_selector(
         fi = rd["frontier_item"]
         if fi.symbol not in answered_syms:
             cands = rd["candidates"]
+            # v7.1.2: this is the llm_omitted_item path — the LLM returned
+            # JSON but didn't include a selection for this symbol. Most
+            # common cause: model capacity (8B model giving up) or prompt
+            # confusion. Log explicitly so the user sees it.
+            log("stage2_item_omitted",
+                round_num=round_num,
+                symbol=fi.symbol,
+                n_candidates=len(cands),
+                candidate_ids=[c["id"] for c in cands])
             result.append({
                 "frontier_item":      fi,
                 "chosen_eq":          None,
@@ -570,7 +890,7 @@ Final answer: {final_answer.get('value_exact')} {final_answer.get('unit')} ({fin
 
 Write the explanation now.
 """
-    return _call(MODEL_SMART, NARRATE_SYSTEM, prompt, temperature=0.2)
+    return _call(MODEL_SMART, NARRATE_SYSTEM, prompt, temperature=0.2, stage="stage4_narrate")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -613,7 +933,7 @@ def generate_distractors(
         f"Common student mistakes for equations used:\n{mistakes_text}\n\n"
         f"Generate 3 wrong MCQ options now."
     )
-    raw = _call(MODEL_FAST, DISTRACT_SYSTEM, prompt)
+    raw = _call(MODEL_FAST, DISTRACT_SYSTEM, prompt, stage="stage5_distractors")
     try:
         d = _extract_json(raw)
         if isinstance(d, list):

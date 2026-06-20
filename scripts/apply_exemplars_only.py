@@ -73,9 +73,15 @@ def main():
         old_len = len(node.get("rag_text", ""))
         new_text = body["rag_text"]
         new_len  = len(new_text)
+        concept  = body.get("concept_name", "")
         diffs.append((eid, body["concept_name"], old_len, new_len))
         if not args.dry_run:
-            node["rag_text"] = new_text
+            node["rag_text"]     = new_text
+            # v7.1.4: also store concept_name on the node. Stage 2's compact
+            # candidate format uses this as the unique physics identifier
+            # (e.g. "Newton's Second Law of Motion") instead of dumping the
+            # full ~600-char rag_text into every Stage 2 prompt.
+            node["concept_name"] = concept
 
     for eid, concept, old_len, new_len in diffs:
         print(f"  {eid:55s}  {old_len:>4d} → {new_len:>4d} chars  ({concept})")

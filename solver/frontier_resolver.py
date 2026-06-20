@@ -210,10 +210,18 @@ def resolve_frontier(
         # ── Step 1: Generate candidates for each frontier item ────────────────
         # Round 0 (initial landing) uses the unified landing layer: symbol
         # candidates UNIONED with semantic candidates from ChromaDB (if
-        # available). Rounds 1+ (input expansion) use symbol-only lookup
-        # because we're chasing specific variables in already-chosen
-        # equations — semantic search wouldn't add anything reliable there.
+        # available). Round 1+ uses the same landing layer but with no
+        # semantic query (symbol-only), AND with knowns-overlap re-ranking
+        # enabled — equations that share more variables with what we
+        # already have bubble to the top, so the bridging equation
+        # (e.g. rho=m/V when we need m and have rho, V) ranks first.
+        # v7.1.4: pass known_symbols + round_num for the re-ranking step.
         round_data = []
+        # Compute the set of currently-known symbols (those with a resolved
+        # value in `available`). This is what we treat as "what we already
+        # have" for the overlap-ranking logic.
+        known_symbols = {sym for sym, meta in available.items()
+                         if meta.get("value") is not None}
         for fi in frontier:
             if round_num == 0:
                 candidates = get_landing_candidates(
@@ -225,14 +233,25 @@ def resolve_frontier(
                     visited_eqs      = visited_eqs,
                     allowed_domains  = allowed_domains,
                     retriever        = retriever,
+                    known_symbols    = known_symbols,
+                    round_num        = round_num,
                 )
             else:
-                candidates = graph_index.candidates_for_quantity(
-                    needed_symbol    = fi.symbol,
-                    needed_name      = fi.name,
-                    needed_dimension = fi.dimension,
+                # Round 1+: symbol-only landing (no fresh semantic query —
+                # the question's Stage 1 search_query was about the original
+                # unknown, not the current frontier item). The overlap
+                # re-ranking promotes bridging equations.
+                candidates = get_landing_candidates(
+                    graph_index      = graph_index,
+                    target_symbol    = fi.symbol,
+                    target_name      = fi.name,
+                    target_dimension = fi.dimension,
+                    search_query     = "",  # disables semantic step
                     visited_eqs      = visited_eqs,
                     allowed_domains  = allowed_domains,
+                    retriever        = None,  # disables semantic step
+                    known_symbols    = known_symbols,
+                    round_num        = round_num,
                 )
             round_data.append({"frontier_item": fi, "candidates": candidates})
 

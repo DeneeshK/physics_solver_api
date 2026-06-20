@@ -138,4 +138,19 @@ class Retriever:
                 "semantic_score": round(float(sem_scores[i]),  4),
                 "bm25_score":     round(float(bm25_scores[i]), 4),
             })
+
+        # v7.1.2: log the retrieval result. This is the line to inspect when
+        # answering "did my RAG find the right equation?". Shows the query,
+        # top-k IDs with hybrid scores, and the semantic/BM25 breakdown so you
+        # can tell whether ChromaDB or BM25 surfaced each hit.
+        from solver.solver_log import log
+        log("retrieval_search",
+            query=query, top_k=top_k, alpha=alpha,
+            n_corpus=n,
+            results=[{
+                "id":      r["node"]["id"],
+                "score":   r["score"],
+                "sem":     r["semantic_score"],
+                "bm25":    r["bm25_score"],
+            } for r in results])
         return results
