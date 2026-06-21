@@ -13,6 +13,7 @@ v7 changes:
     landing layer can show the LLM why each candidate was surfaced.
 """
 from __future__ import annotations
+import os
 import pickle
 from pathlib import Path
 
@@ -49,7 +50,17 @@ class Retriever:
         )}
 
         print(f"[Retriever] Loading embedding model: {EMBED_MODEL}")
-        self.model = SentenceTransformer(EMBED_MODEL)
+        # v7.1.10: pin the embedding model to a chosen device. On an 8GB GPU
+        # shared with the LLM and the display, putting BGE on the GPU
+        # (~1.3GB) steals headroom the 7B model needs to stay resident.
+        # The embedder runs only ONCE per question (embedding the search
+        # query), so CPU is nearly free in wall-clock terms and frees that
+        # VRAM for the model. Override with EMBED_DEVICE=cuda if you ever
+        # want it on GPU.
+        _embed_device = os.getenv("EMBED_DEVICE", "cpu")
+        print(f"[Retriever] Embedding model device: {_embed_device} "
+              f"(set EMBED_DEVICE=cuda to override)")
+        self.model = SentenceTransformer(EMBED_MODEL, device=_embed_device)
 
         print(f"[Retriever] Connecting to ChromaDB at {CHROMA_DIR}")
         client = chromadb.PersistentClient(path=CHROMA_DIR)
@@ -87,6 +98,97 @@ class Retriever:
             return None
 
     # ── Core search ───────────────────────────────────────────────────────────
+    def rank_candidates(
+        self,
+        query:      str,
+        candidates: list[dict],
+        top_k:      int = 8,
+    ) -> list[dict]:
+        """
+        v7.2.1 — ORDER a fixed candidate set by relevance to the query and
+        return the top_k. This is NOT a search over the corpus and NOT a
+        rejection filter: the candidates are supplied by the graph
+        neighbor-walk, and we only re-order them so the most contextually
+        relevant appear first, then take the top_k for display.
+
+        Why this exists: neighbor sets are tiny for rare variables (mass ~5)
+        but large for common ones (velocity ~37). Dumping 37 equations into
+        the Stage 2 prompt overloads the model (it stops choosing and starts
+        chatting). Ranking by the question's own search query and showing the
+        top_k keeps the set small WITHOUT gating any equation out on a
+        symbol/dimension criterion — every candidate remains reachable; those
+        below the cut are simply not shown in this view, and the resolver's
+        fallback tiers still apply if the top_k dead-ends.
+
+        Scoring reuses the same hybrid (semantic + BM25) signal as search(),
+        but computed ONLY over the supplied candidates — no global corpus
+        query. If there are <= top_k candidates, they're returned ranked but
+        not cut.
+        """
+        if not candidates:
+            return []
+        if not query:
+            # No query to rank by — preserve given order, just cap.
+            return candidates[:top_k] if top_k else candidates
+
+        # Semantic: embed the query once, score each candidate's stored
+        # embedding via the collection (by id), falling back to 0 if missing.
+        q_emb = self.model.encode(
+            BGE_QUERY_PREFIX + query,
+            normalize_embeddings=True,
+        ).tolist()
+        cand_ids = [c["id"] for c in candidates]
+        sem_by_id = {cid: 0.0 for cid in cand_ids}
+        # Query the collection restricted to these ids (Chroma supports a where
+        # filter on ids); fall back to a full query intersected with our set.
+        try:
+            sem_res = self.collection.query(
+                query_embeddings=[q_emb],
+                n_results=max(len(cand_ids), 1),
+                ids=cand_ids,
+                include=["distances"],
+            )
+            for res_id, dist in zip(sem_res["ids"][0], sem_res["distances"][0]):
+                if res_id in sem_by_id:
+                    sem_by_id[res_id] = 1.0 - dist
+        except Exception:
+            # Older Chroma without `ids` arg: score over all, then intersect.
+            sem_res = self.collection.query(
+                query_embeddings=[q_emb],
+                n_results=self.n_nodes,
+                include=["distances"],
+            )
+            for res_id, dist in zip(sem_res["ids"][0], sem_res["distances"][0]):
+                if res_id in sem_by_id:
+                    sem_by_id[res_id] = 1.0 - dist
+
+        # BM25 over the candidates only.
+        import numpy as _np
+        bm25_all = _np.array(self.bm25.get_scores(query.lower().split()))
+        bm25_by_id = {}
+        for cid in cand_ids:
+            i = self._id_to_idx.get(cid)
+            bm25_by_id[cid] = float(bm25_all[i]) if i is not None else 0.0
+
+        # Normalize each signal within the candidate set, then combine.
+        sem_vals = _np.array([sem_by_id[c] for c in cand_ids])
+        bm_vals  = _np.array([bm25_by_id[c] for c in cand_ids])
+        if sem_vals.max() > 0:
+            sem_vals = sem_vals / sem_vals.max()
+        if bm_vals.max() > 0:
+            bm_vals = bm_vals / bm_vals.max()
+        combined = HYBRID_ALPHA * sem_vals + (1 - HYBRID_ALPHA) * bm_vals
+
+        order = _np.argsort(combined)[::-1]
+        ranked = [candidates[i] for i in order]
+        cut = ranked[:top_k] if top_k else ranked
+
+        from solver.solver_log import log
+        log("neighbor_rank",
+            query=query, n_candidates=len(candidates), shown=len(cut),
+            top_ids=[c["id"] for c in cut])
+        return cut
+
     def search(
         self,
         query:     str,

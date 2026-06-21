@@ -80,23 +80,90 @@ UNIVERSAL_CONSTANTS = {
 # cannot be rearranged for a specific numerical value, skip during resolution.
 NON_SOLVABLE_SYMBOLS = {'constant'}
 
-# ── Groq API ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
-MODEL_FAST       = "llama-3.1-8b-instant"      # Stage 1 parse + (default) Stage 2 selection
-MODEL_SMART      = "llama-3.3-70b-versatile"   # Stage 4 narration + Stage 5 distractors
+# v7.1.6: Symbol canonicalization map. Stage 1 (the LLM) sometimes names a
+# quantity with a non-canonical symbol — e.g. it calls kinetic energy 'E' or
+# 'E_k' or 'KE', but the graph's kinetic-energy equation (K = 0.5*m*v**2)
+# uses 'K'. When the target symbol doesn't match the graph's symbol for the
+# SAME physical quantity, the resolver treats them as different unknowns and
+# wanders into a wrong chain (the live KE test cascaded E → K → W → F → theta
+# → dead end).
+#
+# This map normalizes common LLM-chosen aliases to the graph's canonical
+# symbol. Applied to the target symbol AND to frontier items. Keyed by the
+# alias the LLM might emit; value is the graph's canonical symbol.
+#
+# Only add entries where the two symbols unambiguously mean the SAME quantity
+# with the SAME dimension. When in doubt, leave it out — a wrong alias mapping
+# is worse than none.
+SYMBOL_ALIASES = {
+    # Kinetic energy: graph uses K
+    'E_k':  'K',
+    'Ek':   'K',
+    'KE':   'K',
+    'E_kin': 'K',
+    # Potential energy: graph uses U
+    'E_p':  'U',
+    'Ep':   'U',
+    'PE':   'U',
+    'E_pot': 'U',
+    # Note: bare 'E' is deliberately NOT mapped — it's ambiguous (could be
+    # energy, electric field, EMF, Young's modulus). The dimension-aware
+    # canonicalizer below handles 'E' contextually.
+}
 
-# v7.1.2: Stage 2 (round_selector) model is now overridable. The default is
-# MODEL_FAST for cost/latency, but concept-level rag_texts (v7.1+) demand
-# more reasoning than the 8B model reliably delivers. If you see
-# `llm_omitted_item` or `llm_decision_none` fallbacks where the right
-# equation was clearly in the candidates, switch to MODEL_SMART:
+# Dimension-aware alias resolution for ambiguous symbols. When Stage 1 emits
+# one of these symbols, the canonical target is chosen by matching the
+# dimension Stage 1 also reported. Format: {ambiguous_sym: {dimension: canonical}}
+SYMBOL_ALIASES_BY_DIMENSION = {
+    'E': {
+        'ML2T-2': 'K',   # energy dimension → kinetic energy (most common 'E' in mechanics)
+    },
+}
+
+# ── LLM provider configuration ────────────────────────────────────────────────
+# v7.1.7: the solver can talk to EITHER Groq (cloud) OR a local OpenAI-
+# compatible server (Ollama / LM Studio / vLLM). The switch is driven entirely
+# by environment variables so you never edit code to change provider.
 #
-#   STAGE2_MODEL=llama-3.3-70b-versatile  (set in .env)
+# How it decides:
+#   - If LLM_BASE_URL is set (e.g. http://localhost:11434/v1), the client
+#     talks to that local server.
+#   - Otherwise it uses Groq with GROQ_API_KEY, exactly as before.
 #
-# Trade-off: ~5–10x slower, ~5x cost. But the v6 8B-friendly architecture
-# was relying on cheap pattern-matching against templated rag_texts, and
-# that escape hatch is gone in v7.1+ by design.
+# Set these in your .env. Examples:
+#   LOCAL (Ollama):
+#     LLM_BASE_URL=http://localhost:11434/v1
+#     LLM_API_KEY=ollama
+#     MODEL_FAST=physics-solver-llm
+#     MODEL_SMART=physics-solver-llm
+#     STAGE2_MODEL=physics-solver-llm
+#   CLOUD (Groq) — leave LLM_BASE_URL unset and set:
+#     GROQ_API_KEY=gsk_...
 import os
+
+GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
+
+# Local / OpenAI-compatible endpoint. Empty string => use Groq.
+LLM_BASE_URL     = os.getenv("LLM_BASE_URL", "")
+# Ollama ignores the key but the client library requires a non-empty string.
+LLM_API_KEY      = os.getenv("LLM_API_KEY", "ollama")
+
+# Model names. These now default to the local tuned model created by
+# setup_local_llm.sh ("physics-solver-llm"), but every one is env-overridable,
+# so switching to Groq is just setting these in .env to the Groq model strings:
+#   MODEL_FAST=llama-3.1-8b-instant
+#   MODEL_SMART=llama-3.3-70b-versatile
+#
+# When running locally, using ONE model for all three is the right call: a
+# single 3B model loaded once serves every stage with no reload churn.
+_DEFAULT_LOCAL_MODEL = "physics-solver-llm"
+MODEL_FAST       = os.getenv("MODEL_FAST",  _DEFAULT_LOCAL_MODEL)   # Stage 1 parse + default Stage 2
+MODEL_SMART      = os.getenv("MODEL_SMART", _DEFAULT_LOCAL_MODEL)   # Stage 4 narration + Stage 5 distractors
+
+# v7.1.2: Stage 2 (round_selector) model is overridable. Locally it points at
+# the same single model. On Groq you may set this to the 70B model if the 8B
+# struggles on chained selection:
+#   STAGE2_MODEL=llama-3.3-70b-versatile
 STAGE2_MODEL     = os.getenv("STAGE2_MODEL", MODEL_FAST)
 
 # v7.1.3: Stage 2 batching strategy. The default is "auto" — single-item

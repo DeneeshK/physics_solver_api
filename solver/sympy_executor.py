@@ -253,11 +253,21 @@ def _execute_simultaneous(group, computed: dict) -> list[StepTrace] | None:
         except Exception as e:
             raise ValueError(f"Failed to parse '{eq['sympy_expr']}': {e}")
 
-    # Unknown symbols = all variables NOT in computed and NOT physical constants
-    unknowns = [
-        all_var_syms[fi.symbol]
-        for fi in group.unknowns
-    ]
+    # Unknown symbols = all variables NOT in computed and NOT physical constants.
+    # v7.1.11: register any unknown symbol that isn't already in all_var_syms
+    # rather than crashing with KeyError. This happens when a frontier item's
+    # symbol differs from the symbol as it appears in the group's equations —
+    # most commonly a CANONICALIZED target (E_k→K, PE→U, KE→K). The target was
+    # renamed during selection, but all_var_syms was built only from the
+    # equations' literal variable names. Creating the symbol here is the
+    # generic fix: it works for any canonicalized or otherwise-unlisted
+    # unknown, not just one specific symbol.
+    unknowns = []
+    for fi in group.unknowns:
+        if fi.symbol not in all_var_syms:
+            all_var_syms[fi.symbol] = symbols(fi.symbol)
+            ns[fi.symbol] = all_var_syms[fi.symbol]
+        unknowns.append(all_var_syms[fi.symbol])
 
     # Substitute all knowns
     sub_map = {

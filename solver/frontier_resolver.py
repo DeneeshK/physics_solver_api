@@ -68,6 +68,11 @@ class ResolutionResult:
     failure_reason: str = ""
     decision_log:   list[dict] = field(default_factory=list)
     status:         str = "SUCCESS"     # "SUCCESS" | "UNVERIFIED"
+    dead_end_root_eq: str = ""          # v7.2.2: the Round-0 equation whose
+    #                                     chain dead-ended, so the caller can
+    #                                     exclude it and try the next Round-0
+    #                                     node (the "drop node, go to next of
+    #                                     top-5" rollback).
 
 
 # ── Topological sort + cycle detection ───────────────────────────────────────
@@ -189,7 +194,7 @@ def resolve_frontier(
     # FrontierItem from this module), and lets the module be imported
     # cheaply in test contexts that don't exercise these paths.
     from solver.llm_interface import estimate_round_tokens
-    from solver.landing       import get_landing_candidates
+    from solver.landing       import get_landing_candidates, get_neighbor_candidates
     from config               import MAX_CANDIDATES_TOKENS_PER_ROUND
 
     if excluded_eqs is None:
@@ -237,25 +242,43 @@ def resolve_frontier(
                     round_num        = round_num,
                 )
             else:
-                # Round 1+: symbol-only landing (no fresh semantic query —
-                # the question's Stage 1 search_query was about the original
-                # unknown, not the current frontier item). The overlap
-                # re-ranking promotes bridging equations.
-                candidates = get_landing_candidates(
-                    graph_index      = graph_index,
-                    target_symbol    = fi.symbol,
-                    target_name      = fi.name,
-                    target_dimension = fi.dimension,
-                    search_query     = "",  # disables semantic step
-                    visited_eqs      = visited_eqs,
-                    allowed_domains  = allowed_domains,
-                    retriever        = None,  # disables semantic step
-                    known_symbols    = known_symbols,
-                    round_num        = round_num,
+                # Round 1+ (v7.2): GRAPH NEIGHBOR WALK, not symbol lookup or
+                # semantic search. We're chasing `fi.symbol`, a variable some
+                # already-chosen equation introduced. Candidates = the graph
+                # neighbors of the chosen equations that SHARE this variable.
+                # The walk-from anchor is every equation chosen so far
+                # (chosen_steps) plus the specific equation that introduced
+                # this item (fi.introduced_by). Showing the small neighbor set
+                # raw lets the LLM judge fit by meaning — no symbol gate, no
+                # dimension reject, no re-ranking.
+                walk_from = {s.equation["id"] for s in chosen_steps}
+                if fi.introduced_by:
+                    walk_from.add(fi.introduced_by)
+                candidates = get_neighbor_candidates(
+                    graph_index   = graph_index,
+                    target_symbol = fi.symbol,
+                    from_eq_ids   = walk_from,
+                    visited_eqs   = visited_eqs,
+                    search_query  = search_query,
+                    retriever     = retriever,
                 )
             round_data.append({"frontier_item": fi, "candidates": candidates})
 
         # ── Step 2: Batched LLM call — split if this round risks oversize ─────
+        # v7.2.3: assemble the SMALL agentic working memory — the ultimate
+        # goal, the committed steps, and the symbols already being solved —
+        # so each sub-decision is aware of the whole solve and can reject a
+        # candidate that conflicts with the plan (e.g. F=m*g for mass while
+        # F is the goal and a is already handled). Only committed steps.
+        solve_context = {
+            "goal_symbol":  target.symbol,
+            "goal_name":    target.name,
+            "chosen_steps": [
+                {"symbol": s.solves_for.symbol, "eq_str": s.equation["equation_str"]}
+                for s in chosen_steps
+            ],
+            "being_solved": sorted({s.solves_for.symbol for s in chosen_steps}),
+        }
         if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
             selections = []
             for rd in round_data:
@@ -264,6 +287,7 @@ def resolve_frontier(
                     available=available,
                     round_data=[rd],
                     round_num=round_num,
+                    solve_context=solve_context,
                 ))
         else:
             selections = llm_round_fn(
@@ -271,6 +295,7 @@ def resolve_frontier(
                 available=available,
                 round_data=round_data,
                 round_num=round_num,
+                solve_context=solve_context,
             )
 
         # ── Step 3: Apply picks, build next frontier ──────────────────────────
@@ -343,11 +368,29 @@ def resolve_frontier(
                     ],
                     "decision":           "none",
                 })
+                # v7.2.3: report the SPECIFIC equation to exclude so the
+                # pipeline rolls back the actual culprit, not the whole chain.
+                # When chasing fi dead-ends, the equation at fault is the one
+                # that INTRODUCED fi (fi.introduced_by) — that deeper pick is
+                # what led down a dead branch (e.g. choosing F=m*g for mass
+                # introduced a path that can't close). Excluding it lets the
+                # retry re-pick THAT step while keeping the good root and good
+                # earlier steps intact. This fixes the v7.2.2 bug where banning
+                # the Round-0 root discarded correct starting equations (which
+                # broke the kinetic-energy chain). Fall back to the root only
+                # if fi has no recorded introducer (it was the main unknown).
+                culprit_eq = fi.introduced_by or ""
+                if not culprit_eq:
+                    for s in chosen_steps:
+                        if s.round_num == 0:
+                            culprit_eq = s.equation["id"]
+                            break
                 return ResolutionResult(
                     plan=[], final_symbol=target.symbol, success=False,
                     failure_reason=reason_for_failure,
                     decision_log=decision_log,
                     status="UNVERIFIED",
+                    dead_end_root_eq=culprit_eq,
                 )
 
             # Record the step

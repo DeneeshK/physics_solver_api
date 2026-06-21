@@ -23,10 +23,72 @@ from solver.llm_interface   import (
 )
 from config import (
     PHYSICAL_CONSTANTS, UNIVERSAL_CONSTANTS, IMPLICIT_CONSTANTS_CATALOG,
-    ENABLE_CHROMA_LANDING,
+    ENABLE_CHROMA_LANDING, SYMBOL_ALIASES, SYMBOL_ALIASES_BY_DIMENSION,
 )
 
-MAX_BACKTRACK_ATTEMPTS = 3  # Stage 3 failure -> exclude offending eq(s) -> retry Stage 2
+MAX_BACKTRACK_ATTEMPTS = 6  # v7.2.2: covers both Stage-3 exclusions AND
+#                             Stage-2 node-rollback (drop a dead-ended Round-0
+#                             node, try the next of the top-5). Needs to be a
+#                             few more than the retrieval top_k so several
+#                             candidate nodes can be tried before giving up.
+
+
+def _free_inter_question_memory() -> None:
+    """
+    v7.1.10: free per-question working memory between questions WITHOUT
+    unloading the LLM.
+
+    On an 8GB GPU running one resident 7B model, memory pressure across a
+    long run (e.g. the 89-question bank) comes from two places: Python
+    objects accumulating, and the local embedding framework's CUDA cache (if
+    EMBED_DEVICE=cuda). This clears both. It deliberately does NOT call
+    Ollama's unload — the model is meant to stay resident the whole run, so
+    we keep the weights in VRAM and only release transient allocations.
+
+    Note: the Ollama server holds the LLM weights in its OWN process, so this
+    never touches them — it only frees what the solver's own process holds.
+    Safe to call even when torch isn't installed (the embedder may be on CPU
+    or use a non-torch backend); failures are swallowed.
+    """
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        # torch not present, or CUDA not in use (e.g. embedder on CPU) —
+        # gc.collect() above is sufficient.
+        pass
+
+
+def _canonicalize_symbol(sym: str, dimension: str = "") -> str:
+    """
+    v7.1.6: Map an LLM-chosen symbol to the graph's canonical symbol for the
+    same physical quantity.
+
+    Two-tier resolution:
+      1. Direct alias (E_k → K, PE → U): unambiguous, dimension-independent.
+      2. Dimension-aware alias (E + dimension ML2T-2 → K): for symbols whose
+         meaning depends on context, the dimension Stage 1 reported picks the
+         canonical target.
+
+    Returns the canonical symbol, or the original if no mapping applies.
+    """
+    if sym in SYMBOL_ALIASES:
+        return SYMBOL_ALIASES[sym]
+    if sym in SYMBOL_ALIASES_BY_DIMENSION and dimension:
+        # Normalize dimension formatting for the lookup: strip spaces and
+        # carets, and fold unicode superscripts (²³) to ASCII digits, since
+        # Stage 1 emits both 'ML2T-2' and 'ML²T-2' for the same dimension.
+        dim_norm = (dimension.replace(" ", "").replace("^", "")
+                    .replace("²", "2").replace("³", "3")
+                    .replace("⁴", "4").replace("⁻", "-").replace("¹", "1"))
+        dim_map = SYMBOL_ALIASES_BY_DIMENSION[sym]
+        if dim_norm in dim_map:
+            return dim_map[dim_norm]
+    return sym
 
 
 @dataclass
@@ -86,6 +148,12 @@ class PhysicsSolver:
     def solve(self, question: str) -> SolverResponse:
         t0 = time.time()
         from solver.solver_log import log, log_error
+        # v7.1.10: free transient per-question memory before starting the
+        # next question (clears CUDA cache / Python garbage from the prior
+        # solve) WITHOUT unloading the resident LLM. Runs at solve entry so
+        # it executes between questions regardless of how the previous solve
+        # ended.
+        _free_inter_question_memory()
         log("solve_entry", question=question)
 
         # ═══════════════════════════════════════════════════════════════════════
@@ -100,6 +168,20 @@ class PhysicsSolver:
         given_meta  = parsed.get("given", {})   # {sym: {value,unit,name,dimension}}
         unknown     = parsed.get("unknown", {})  # {symbol,name,unit,dimension}
         target_sym  = unknown.get("symbol", "")
+        target_dim  = unknown.get("dimension", "")
+
+        # v7.1.6: canonicalize the target symbol. Stage 1 may name kinetic
+        # energy 'E' or 'E_k' where the graph uses 'K'. Without this, the
+        # resolver treats them as different unknowns and builds a wrong chain.
+        canon_sym = _canonicalize_symbol(target_sym, target_dim)
+        if canon_sym != target_sym:
+            from solver.solver_log import log
+            log("target_symbol_canonicalized",
+                original=target_sym, canonical=canon_sym, dimension=target_dim)
+            target_sym = canon_sym
+            unknown = dict(unknown)
+            unknown["symbol"] = canon_sym
+
         search_query = parsed.get("search_query", "")  # v7: for Chroma landing
         # Hint only — candidates_for_quantity() falls back to the full set
         # whenever this would otherwise leave zero candidates for a quantity,
@@ -180,8 +262,22 @@ class PhysicsSolver:
                 full_decision_log.append({**entry, "attempt": attempt})
 
             if not resolution.success:
-                # Stage 2 itself couldn't find a chain (no candidates left
-                # after exclusions, or LLM declared it unanswerable).
+                # Stage 2 couldn't complete a chain. v7.2.2: if the dead-end
+                # had a Round-0 root equation, this is the "drop this node, try
+                # the next top-5 node" case — exclude that root and retry, so
+                # Round 0 re-runs with it banned and the LLM picks the next-best
+                # node from retrieval. Only give up when there's no root to
+                # exclude (the main unknown itself had no fit), or excluding it
+                # wouldn't change anything (already excluded).
+                root = resolution.dead_end_root_eq
+                if root and root not in excluded_eqs:
+                    log("stage2_node_rollback",
+                        excluded_root=root, attempt=attempt,
+                        reason="chain dead-ended; dropping this Round-0 node "
+                               "and retrying with the next top-5 node")
+                    excluded_eqs.add(root)
+                    continue
+                # No root to exclude, or already tried — genuinely stuck.
                 break
 
             exec_trace = execute_plan(

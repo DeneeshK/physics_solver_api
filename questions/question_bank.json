@@ -1,0 +1,1343 @@
+[
+  {
+    "id": "AC_circuits_single_step_01",
+    "domain": "AC_circuits",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 100 microF capacitor is connected to an AC source of frequency 50 Hz. Find its capacitive reactance.",
+    "expected_answer": 31.83,
+    "expected_unit": "ohm",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "X_c = 1/(2*pi*f*C) = 1/(2*pi*50*100e-6) ~ 31.83 ohm.",
+    "implicit_values": {},
+    "expected_equations": [
+      "X_c = 1/(omega*C)",
+      "omega = 2*pi*f"
+    ],
+    "notes": "Baseline reactance formula."
+  },
+  {
+    "id": "AC_circuits_multi_step_chain_01",
+    "domain": "AC_circuits",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A series circuit contains a resistor of 30 ohm and an inductor of inductive reactance 40 ohm, connected to a 200 V AC source. Find the rms current in the circuit.",
+    "expected_answer": 4.0,
+    "expected_unit": "A",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Compute impedance Z = sqrt(R^2 + X_L^2) = sqrt(900 + 1600) = 50 ohm. I_rms = V_rms/Z = 200/50 = 4 A.",
+    "implicit_values": {},
+    "expected_equations": [
+      "Z = sqrt(R^2 + X_L^2)",
+      "I = V/Z"
+    ],
+    "notes": "Impedance + Ohm's law for AC."
+  },
+  {
+    "id": "SHM_single_step_01",
+    "domain": "SHM",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 0.5 kg mass is attached to a spring of force constant 200 N/m and executes simple harmonic motion on a frictionless horizontal surface. Find the period of oscillation.",
+    "expected_answer": 0.3141592653589793,
+    "expected_unit": "s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "T = 2*pi*sqrt(m/k) = 2*pi*sqrt(0.5/200) = 2*pi/20 = pi/10 ~ 0.314 s.",
+    "implicit_values": {},
+    "expected_equations": [
+      "T = 2*pi*sqrt(m/k)"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "SHM_multi_step_chain_01",
+    "domain": "SHM",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A simple pendulum of length 1.0 m oscillates with small amplitude near the surface of the Earth. Find its period of oscillation. Take g = 9.8 m/s^2.",
+    "expected_answer": 2.007,
+    "expected_unit": "s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "T = 2*pi*sqrt(L/g) = 2*pi*sqrt(1/9.8) ~ 2.007 s.",
+    "implicit_values": {
+      "small_amplitude": true
+    },
+    "expected_equations": [
+      "T = 2*pi*sqrt(L/g)"
+    ],
+    "notes": "Standard simple-pendulum formula; small-amplitude is implicit."
+  },
+  {
+    "id": "SHM_implicit_given_01",
+    "domain": "SHM",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A particle executes simple harmonic motion with amplitude 0.05 m and angular frequency 10 rad/s. Find its maximum speed.",
+    "expected_answer": 0.5,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Maximum speed occurs at the equilibrium position: v_max = A*omega = 0.05*10 = 0.5 m/s.",
+    "implicit_values": {
+      "position_at_v_max": "equilibrium"
+    },
+    "expected_equations": [
+      "v_max = A*omega"
+    ],
+    "notes": "Implicit: 'maximum speed' invokes the equilibrium-point condition."
+  },
+  {
+    "id": "capacitors_single_step_01",
+    "domain": "capacitors",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 10 microF capacitor is connected across a 12 V battery. Find the charge stored on the capacitor.",
+    "expected_answer": 0.00012,
+    "expected_unit": "C",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Q = C*V = 10e-6 * 12 = 1.2e-4 C.",
+    "implicit_values": {},
+    "expected_equations": [
+      "Q = C*V"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "capacitors_multi_step_chain_01",
+    "domain": "capacitors",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A parallel-plate capacitor has plate area 0.02 m^2 and plate separation 1 mm. The space between the plates is completely filled with a dielectric of dielectric constant 4. The capacitor is connected to a 100 V source. Find the charge stored on the capacitor. Take epsilon_0 = 8.854e-12 F/m.",
+    "expected_answer": 7.0832e-08,
+    "expected_unit": "C",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Compute capacitance C = K*epsilon_0*A/d = 4*8.854e-12*0.02/1e-3 = 7.0832e-10 F. Then Q = C*V = 7.0832e-10*100 = 7.0832e-8 C.",
+    "implicit_values": {},
+    "expected_equations": [
+      "C = K*epsilon_0*A/d",
+      "Q = C*V"
+    ],
+    "notes": "Two-step chain with dielectric. Tests unit handling (mm -> m)."
+  },
+  {
+    "id": "capacitors_implicit_given_01",
+    "domain": "capacitors",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "Two capacitors of capacitance 4 microF and 6 microF are connected in series across a battery. Find the equivalent capacitance of the combination.",
+    "expected_answer": 2.4,
+    "expected_unit": "microF",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "For series: 1/C_eq = 1/4 + 1/6 = 5/12, so C_eq = 12/5 = 2.4 microF.",
+    "implicit_values": {
+      "connection": "series"
+    },
+    "expected_equations": [
+      "1/C_eq = 1/C1 + 1/C2"
+    ],
+    "notes": "Tests series-vs-parallel concept identification (a common LLM confusion)."
+  },
+  {
+    "id": "circular_motion_single_step_01",
+    "domain": "circular_motion",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A particle moves in a circle of radius 5 m with a constant speed of 10 m/s. Find the magnitude of its centripetal acceleration.",
+    "expected_answer": 20.0,
+    "expected_unit": "m/s^2",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "a_c = v^2/r = 100/5 = 20 m/s^2.",
+    "implicit_values": {},
+    "expected_equations": [
+      "a = v^2/r"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "circular_motion_multi_step_chain_01",
+    "domain": "circular_motion",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A car of mass 1000 kg travels around a circular track of radius 50 m at a constant speed of 20 m/s. Find the magnitude of the centripetal force acting on the car.",
+    "expected_answer": 8000.0,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Compute a_c = v^2/r = 400/50 = 8 m/s^2. Then F = m*a_c = 1000*8 = 8000 N.",
+    "implicit_values": {},
+    "expected_equations": [
+      "a = v^2/r",
+      "F = m*a"
+    ],
+    "notes": "Two-equation chain."
+  },
+  {
+    "id": "circular_motion_implicit_given_01",
+    "domain": "circular_motion",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "A particle moves in a circle of radius 2 m at constant speed, completing 5 revolutions per second. Find its centripetal acceleration.",
+    "expected_answer": 1973.92,
+    "expected_unit": "m/s^2",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "'5 revolutions per second' implies frequency f=5 Hz, so angular velocity omega = 2*pi*f = 10*pi rad/s. a_c = omega^2 * r = 100*pi^2 * 2 = 200*pi^2 ~ 1973.92 m/s^2.",
+    "implicit_values": {
+      "f": 5
+    },
+    "expected_equations": [
+      "omega = 2*pi*f",
+      "a = omega^2 * r"
+    ],
+    "notes": "'Revolutions per second' must be mapped to angular frequency."
+  },
+  {
+    "id": "current_electricity_single_step_01",
+    "domain": "current_electricity",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A current of 2 A flows through a resistor of resistance 5 ohm. Find the voltage across the resistor.",
+    "expected_answer": 10.0,
+    "expected_unit": "V",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "V = I*R = 2*5 = 10 V.",
+    "implicit_values": {},
+    "expected_equations": [
+      "V = I*R"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "current_electricity_multi_step_chain_01",
+    "domain": "current_electricity",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A cylindrical copper wire of length 2 m and cross-sectional area 1e-6 m^2 has resistivity 1.7e-8 ohm*m. A potential difference of 6 V is applied across its ends. Find the current flowing through the wire.",
+    "expected_answer": 176.47,
+    "expected_unit": "A",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "R = rho*L/A = 1.7e-8*2/1e-6 = 0.034 ohm. I = V/R = 6/0.034 ~ 176.47 A.",
+    "implicit_values": {},
+    "expected_equations": [
+      "R = rho*L/A",
+      "I = V/R"
+    ],
+    "notes": "Compute resistance from material properties first, then apply Ohm's law."
+  },
+  {
+    "id": "current_electricity_implicit_given_01",
+    "domain": "current_electricity",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "Three resistors, each of resistance 6 ohm, are connected in parallel between two nodes. Find the equivalent resistance.",
+    "expected_answer": 2.0,
+    "expected_unit": "ohm",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "For n equal resistors in parallel: R_eq = R/n = 6/3 = 2 ohm.",
+    "implicit_values": {
+      "connection": "parallel",
+      "n_equal": 3
+    },
+    "expected_equations": [
+      "1/R_eq = sum(1/R_i)"
+    ],
+    "notes": "Series-vs-parallel selection test."
+  },
+  {
+    "id": "current_electricity_symbol_mismatch_or_trap_01",
+    "domain": "current_electricity",
+    "reasoning_type": "symbol_mismatch_or_trap",
+    "difficulty": "medium",
+    "question": "A current of 3 A flows through a 4 ohm resistor. Find the power dissipated in the resistor.",
+    "expected_answer": 36.0,
+    "expected_unit": "W",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "P = I^2*R = 9*4 = 36 W. (Equivalently P = V*I with V=12 gives 36 W.)",
+    "implicit_values": {},
+    "expected_equations": [
+      "P = I^2 * R"
+    ],
+    "notes": "Three valid forms (P=VI, P=I^2R, P=V^2/R). Symbol-form trap: solver must pick the one whose inputs are given."
+  },
+  {
+    "id": "elasticity_single_step_01",
+    "domain": "elasticity",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A force of 1000 N is applied perpendicularly to the end of a rod of cross-sectional area 1e-4 m^2. Find the resulting tensile stress in the rod.",
+    "expected_answer": 10000000.0,
+    "expected_unit": "Pa",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Stress = F/A = 1000/1e-4 = 1e7 Pa.",
+    "implicit_values": {},
+    "expected_equations": [
+      "sigma = F/A"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "elasticity_multi_step_chain_01",
+    "domain": "elasticity",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A steel wire of length 2 m and uniform cross-sectional area 1e-6 m^2 hangs vertically from a rigid support. A 10 kg mass is attached to its lower end and the system is in equilibrium. Find the extension of the wire. Take Young's modulus of steel = 2e11 Pa and g = 9.8 m/s^2.",
+    "expected_answer": 0.00098,
+    "expected_unit": "m",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Tension F = m*g = 98 N. Then dL = F*L/(A*Y) = 98*2/(1e-6*2e11) = 9.8e-4 m.",
+    "implicit_values": {},
+    "expected_equations": [
+      "F = m*g",
+      "dL = F*L/(A*Y)"
+    ],
+    "notes": "Two-step: weight then extension from Young's modulus."
+  },
+  {
+    "id": "electromagnetic_induction_single_step_01",
+    "domain": "electromagnetic_induction",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "The magnetic flux through a coil changes by 0.4 Wb in 0.2 s. Find the magnitude of the induced emf.",
+    "expected_answer": 2.0,
+    "expected_unit": "V",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "|emf| = |dPhi/dt| = 0.4/0.2 = 2 V.",
+    "implicit_values": {},
+    "expected_equations": [
+      "emf = -dPhi/dt"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "electromagnetic_induction_multi_step_chain_01",
+    "domain": "electromagnetic_induction",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A square conducting loop of side 0.2 m is being pulled out of a region of uniform magnetic field B = 0.5 T at a constant speed of 2 m/s, with the field perpendicular to the plane of the loop. Find the magnitude of the induced emf while one side is still in the field.",
+    "expected_answer": 0.2,
+    "expected_unit": "V",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Motional emf: emf = B*L*v = 0.5*0.2*2 = 0.2 V. Length of the side in the field is L = 0.2 m.",
+    "implicit_values": {},
+    "expected_equations": [
+      "emf = B*L*v"
+    ],
+    "notes": "Motional emf formula application."
+  },
+  {
+    "id": "electrostatics_single_step_01",
+    "domain": "electrostatics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "Two point charges of 1 microC each are placed 0.1 m apart in vacuum. Find the magnitude of the electrostatic force between them. Take k = 9e9 N*m^2/C^2.",
+    "expected_answer": 0.9,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "F = k*q1*q2/r^2 = 9e9*(1e-6)^2/(0.1)^2 = 0.9 N.",
+    "implicit_values": {},
+    "expected_equations": [
+      "F = k*q1*q2/r^2"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "electrostatics_implicit_given_01",
+    "domain": "electrostatics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "Two equal point charges placed 1 m apart in vacuum experience a mutual electrostatic force of 9 N. Find the magnitude of each charge.",
+    "expected_answer": 3.162e-05,
+    "expected_unit": "C",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "'In vacuum' -> use k = 9e9. F = k*q^2/r^2 -> q = sqrt(F*r^2/k) = sqrt(9*1/9e9) ~ 3.162e-5 C.",
+    "implicit_values": {
+      "k": 9000000000.0
+    },
+    "expected_equations": [
+      "F = k*q^2/r^2"
+    ],
+    "notes": "Implicit: 'in vacuum' selects k = 1/(4*pi*epsilon_0) = 9e9."
+  },
+  {
+    "id": "electrostatics_underspecified_01",
+    "domain": "electrostatics",
+    "reasoning_type": "underspecified",
+    "difficulty": "easy",
+    "question": "Find the electric field at a point.",
+    "expected_answer": null,
+    "expected_unit": null,
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Cannot be solved - no source charges, no distance, no geometry specified.",
+    "implicit_values": {},
+    "expected_equations": [],
+    "notes": "Pure hallucination test for fields."
+  },
+  {
+    "id": "fluid_mechanics_single_step_01",
+    "domain": "fluid_mechanics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "Find the gauge pressure at the bottom of a freshwater tank filled to a depth of 10 m. Take density of water = 1000 kg/m^3 and g = 9.8 m/s^2.",
+    "expected_answer": 98000.0,
+    "expected_unit": "Pa",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "P_gauge = rho*g*h = 1000*9.8*10 = 98000 Pa.",
+    "implicit_values": {},
+    "expected_equations": [
+      "P = rho*g*h"
+    ],
+    "notes": "Baseline hydrostatic pressure."
+  },
+  {
+    "id": "fluid_mechanics_multi_step_chain_01",
+    "domain": "fluid_mechanics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A solid object of volume 0.001 m^3 is completely submerged in water. Find the buoyant force acting on it. Take density of water = 1000 kg/m^3 and g = 9.8 m/s^2.",
+    "expected_answer": 9.8,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Archimedes' principle: F_B = rho_fluid*V_submerged*g = 1000*0.001*9.8 = 9.8 N.",
+    "implicit_values": {
+      "fully_submerged": true
+    },
+    "expected_equations": [
+      "F_B = rho*V*g"
+    ],
+    "notes": "Buoyancy formula; 'completely submerged' fixes V_submerged = V_object."
+  },
+  {
+    "id": "fluid_mechanics_implicit_given_01",
+    "domain": "fluid_mechanics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "A wooden block floats in still water with exactly half of its volume submerged. Find the density of the block. Take density of water = 1000 kg/m^3.",
+    "expected_answer": 500.0,
+    "expected_unit": "kg/m^3",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Equilibrium floating: rho_body*V*g = rho_water*V_sub*g, with V_sub = V/2 -> rho_body = rho_water/2 = 500 kg/m^3.",
+    "implicit_values": {
+      "floating_equilibrium": true
+    },
+    "expected_equations": [
+      "rho_body*V = rho_fluid*V_submerged"
+    ],
+    "notes": "Implicit: 'floats' invokes the floating-equilibrium condition."
+  },
+  {
+    "id": "friction_single_step_01",
+    "domain": "friction",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 10 kg block rests on a horizontal surface. The coefficient of kinetic friction between the block and the surface is 0.3. Find the magnitude of the kinetic friction force when the block slides. Take g = 9.8 m/s^2.",
+    "expected_answer": 29.4,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Normal force N = m*g = 98 N. f_k = mu_k * N = 0.3*98 = 29.4 N.",
+    "implicit_values": {},
+    "expected_equations": [
+      "N = m*g",
+      "f = mu*N"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "friction_implicit_given_01",
+    "domain": "friction",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "A block placed on an inclined plane just begins to slide when the inclination angle is 30 degrees. Find the coefficient of static friction between the block and the plane.",
+    "expected_answer": 0.5774,
+    "expected_unit": "dimensionless",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "'Just begins to slide' is the limiting condition where mu_s = tan(theta_critical) = tan(30) = 1/sqrt(3) ~ 0.5774.",
+    "implicit_values": {
+      "limiting_condition": true
+    },
+    "expected_equations": [
+      "mu_s = tan(theta)"
+    ],
+    "notes": "Implicit: 'just begins to slide' invokes the limiting equilibrium condition."
+  },
+  {
+    "id": "friction_multi_step_chain_01",
+    "domain": "friction",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A 5 kg block is pulled along a horizontal surface by a horizontal force of 30 N. The coefficient of kinetic friction between the block and the surface is 0.2. Find the acceleration of the block. Take g = 9.8 m/s^2.",
+    "expected_answer": 4.04,
+    "expected_unit": "m/s^2",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Compute N = m*g = 49 N. Friction f = mu_k*N = 9.8 N. Net force = 30 - 9.8 = 20.2 N. a = 20.2/5 = 4.04 m/s^2.",
+    "implicit_values": {},
+    "expected_equations": [
+      "N = m*g",
+      "f = mu*N",
+      "F_net = F_applied - f",
+      "a = F_net/m"
+    ],
+    "notes": "Three-step chain: normal -> friction -> net force -> acceleration."
+  },
+  {
+    "id": "gravitation_single_step_01",
+    "domain": "gravitation",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "Two point masses of 1000 kg each are separated by a distance of 10 m in free space. Find the magnitude of the gravitational force of attraction between them. Take G = 6.674e-11 N*m^2/kg^2.",
+    "expected_answer": 6.674e-07,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "F = G*m1*m2/r^2 = 6.674e-11 * 1e6 / 100 = 6.674e-7 N.",
+    "implicit_values": {},
+    "expected_equations": [
+      "F = G*m1*m2/r^2"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "gravitation_multi_step_chain_01",
+    "domain": "gravitation",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A satellite orbits the Earth in a circular orbit at an altitude of 300 km above the Earth's surface. Find its orbital speed. Take G = 6.674e-11 N*m^2/kg^2, mass of Earth = 5.972e24 kg, radius of Earth = 6.371e6 m.",
+    "expected_answer": 7726.0,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Orbital radius r = R_E + h = 6.371e6 + 3e5 = 6.671e6 m. Equate gravitational force to centripetal: G*M/r^2 = v^2/r, so v = sqrt(G*M/r) = sqrt(6.674e-11 * 5.972e24 / 6.671e6) ~ 7726 m/s.",
+    "implicit_values": {},
+    "expected_equations": [
+      "r = R_E + h",
+      "v = sqrt(G*M/r)"
+    ],
+    "notes": "Two-step: compose orbital radius, then apply orbital-velocity formula."
+  },
+  {
+    "id": "gravitation_implicit_given_01",
+    "domain": "gravitation",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "A body weighs 100 N on the surface of the Earth. Find its weight at a height equal to the radius of the Earth above the Earth's surface.",
+    "expected_answer": 25.0,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "g' = g/(1 + h/R)^2. At h = R, g' = g/4. So weight = 100/4 = 25 N.",
+    "implicit_values": {
+      "h_over_R": 1
+    },
+    "expected_equations": [
+      "g' = g/(1 + h/R)^2",
+      "W = m*g"
+    ],
+    "notes": "Implicit: 'radius of the Earth above the surface' -> h = R, so altitude = R."
+  },
+  {
+    "id": "kinematics_single_step_01",
+    "domain": "kinematics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A car accelerates uniformly along a straight road, increasing its velocity from 10 m/s to 30 m/s in 4 seconds. Find the magnitude of its acceleration.",
+    "expected_answer": 5.0,
+    "expected_unit": "m/s^2",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "One-step application of a = (v - u)/t with u=10, v=30, t=4.",
+    "implicit_values": {},
+    "expected_equations": [
+      "a = (v - u) / t"
+    ],
+    "notes": "Baseline single-step problem with all inputs given."
+  },
+  {
+    "id": "kinematics_multi_step_chain_01",
+    "domain": "kinematics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A train traveling at 72 km/h applies its brakes and decelerates uniformly, coming to rest after traveling 200 m. At the instant the brakes are applied, a bird is sitting on the track 50 m ahead of the train. The bird immediately starts flying in the same direction the train is moving, at a constant speed of 5 m/s. How many seconds after the brakes are applied does the train catch up to the bird?",
+    "expected_answer": 3.8197,
+    "expected_unit": "s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Convert u = 72 km/h = 20 m/s. From v^2=u^2+2as with v=0, s=200, derive a=-1 m/s^2. Set train position 20t-0.5t^2 equal to bird position 50+5t, solve quadratic. Take smaller root t=(30-sqrt(500))/2 ~ 3.82 s.",
+    "implicit_values": {
+      "v_final_train": 0
+    },
+    "expected_equations": [
+      "v^2 = u^2 + 2*a*s",
+      "x_train(t) = u*t + 0.5*a*t^2",
+      "x_bird(t) = x0 + v_bird*t",
+      "x_train(t) = x_bird(t)"
+    ],
+    "notes": "Three-link chain: unit conversion + derive deceleration + relative-motion quadratic."
+  },
+  {
+    "id": "kinematics_implicit_given_01",
+    "domain": "kinematics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A car starts from rest and accelerates uniformly at 2 m/s^2 for 8 seconds. Find its final velocity.",
+    "expected_answer": 16.0,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "'Starts from rest' implies u=0. Apply v = u + a*t with a=2, t=8.",
+    "implicit_values": {
+      "u": 0
+    },
+    "expected_equations": [
+      "v = u + a*t"
+    ],
+    "notes": "Canonical implicit-given: 'starts from rest' -> u=0."
+  },
+  {
+    "id": "kinematics_symbol_mismatch_or_trap_01",
+    "domain": "kinematics",
+    "reasoning_type": "symbol_mismatch_or_trap",
+    "difficulty": "medium",
+    "question": "A stone is dropped from the top of an 80 m tall cliff. Find the speed of the stone just before it strikes the ground. Take g = 9.8 m/s^2 and ignore air resistance.",
+    "expected_answer": 39.598,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "'Dropped' implies u=0. Apply v^2 = u^2 + 2gh with h=80, g=9.8 to get v = sqrt(1568) ~ 39.60 m/s.",
+    "implicit_values": {
+      "u": 0,
+      "a": 9.8
+    },
+    "expected_equations": [
+      "v^2 = u^2 + 2*a*s"
+    ],
+    "notes": "Multiple traps: 'dropped' implicit u=0, 'speed' vs 'velocity' sign, h vs s symbol mismatch."
+  },
+  {
+    "id": "kinematics_underspecified_01",
+    "domain": "kinematics",
+    "reasoning_type": "underspecified",
+    "difficulty": "easy",
+    "question": "Find the velocity of the object.",
+    "expected_answer": null,
+    "expected_unit": null,
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Cannot be solved - no numerical data of any kind.",
+    "implicit_values": {},
+    "expected_equations": [],
+    "notes": "Pure hallucination test."
+  },
+  {
+    "id": "kinematics_underspecified_02",
+    "domain": "kinematics",
+    "reasoning_type": "underspecified",
+    "difficulty": "medium",
+    "question": "A ball is thrown vertically upward from the ground with some initial velocity. Find the maximum height it reaches. Take g = 9.8 m/s^2.",
+    "expected_answer": null,
+    "expected_unit": null,
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Cannot be solved - initial velocity u is referenced qualitatively but never assigned a numeric value.",
+    "implicit_values": {
+      "v_at_top": 0
+    },
+    "expected_equations": [
+      "v^2 = u^2 - 2*g*h"
+    ],
+    "notes": "Subtler: equation identifiable, implicit v=0 at apex present, but numeric input missing."
+  },
+  {
+    "id": "laws_of_motion_single_step_01",
+    "domain": "laws_of_motion",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A constant horizontal force is applied to a 5 kg block resting on a frictionless surface, producing an acceleration of 3 m/s^2. Find the magnitude of the applied force.",
+    "expected_answer": 15.0,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Direct application of Newton's second law: F = m*a = 5*3 = 15 N.",
+    "implicit_values": {},
+    "expected_equations": [
+      "F = m*a"
+    ],
+    "notes": "Baseline F=ma."
+  },
+  {
+    "id": "laws_of_motion_multi_step_chain_01",
+    "domain": "laws_of_motion",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A solid cube of iron with side length 0.1 m and density 7800 kg/m^3 rests on a smooth horizontal floor. A horizontal force is applied to give the cube a uniform acceleration of 4 m/s^2. Find the magnitude of the applied force.",
+    "expected_answer": 31.2,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Compute volume V = 0.1^3 = 1e-3 m^3. Mass m = rho*V = 7800*1e-3 = 7.8 kg. Apply F = m*a = 7.8*4 = 31.2 N. Mass must be derived from density and volume before F=ma can be applied.",
+    "implicit_values": {
+      "friction": 0
+    },
+    "expected_equations": [
+      "V = L^3",
+      "m = rho*V",
+      "F = m*a"
+    ],
+    "notes": "Density/volume -> mass chain. Tests whether the solver derives a mid-chain quantity."
+  },
+  {
+    "id": "laws_of_motion_implicit_given_01",
+    "domain": "laws_of_motion",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A 10 kg block is pulled along a smooth horizontal surface by a horizontal force of 50 N. Find the acceleration of the block.",
+    "expected_answer": 5.0,
+    "expected_unit": "m/s^2",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "'Smooth' implies coefficient of friction = 0, so net force = applied force. a = F/m = 50/10 = 5 m/s^2.",
+    "implicit_values": {
+      "mu": 0
+    },
+    "expected_equations": [
+      "F_net = F_applied - f",
+      "F_net = m*a"
+    ],
+    "notes": "'Smooth' -> mu=0 is the implicit given."
+  },
+  {
+    "id": "laws_of_motion_symbol_mismatch_or_trap_01",
+    "domain": "laws_of_motion",
+    "reasoning_type": "symbol_mismatch_or_trap",
+    "difficulty": "medium",
+    "question": "Two blocks of masses 3 kg and 2 kg are connected by a light inextensible string and rest on a smooth horizontal surface. A horizontal force of 20 N is applied to the 3 kg block, pulling the system. Find the tension in the string connecting the two blocks.",
+    "expected_answer": 8.0,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Find system acceleration first: a = F/(m1+m2) = 20/5 = 4 m/s^2. The tension is the only horizontal force on the 2 kg block, so T = m2*a = 2*4 = 8 N. Trap: students often try T = F or T = (m1)*a.",
+    "implicit_values": {
+      "mu": 0
+    },
+    "expected_equations": [
+      "a = F / (m1+m2)",
+      "T = m2 * a"
+    ],
+    "notes": "Connected-bodies tension. Common wrong equation: T = applied force, or applying F=ma to the front block."
+  },
+  {
+    "id": "magnetism_single_step_01",
+    "domain": "magnetism",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "An electron moves with speed 1e6 m/s perpendicular to a uniform magnetic field of magnitude 0.5 T. Find the magnitude of the magnetic force acting on it. Take electron charge magnitude = 1.6e-19 C.",
+    "expected_answer": 8e-14,
+    "expected_unit": "N",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "F = q*v*B*sin(90) = 1.6e-19*1e6*0.5 = 8e-14 N.",
+    "implicit_values": {
+      "angle": 90
+    },
+    "expected_equations": [
+      "F = q*v*B*sin(theta)"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "magnetism_multi_step_chain_01",
+    "domain": "magnetism",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A long straight wire carries a steady current of 10 A. Find the magnitude of the magnetic field at a point 5 cm from the wire. Take mu_0 = 4*pi*1e-7 T*m/A.",
+    "expected_answer": 4e-05,
+    "expected_unit": "T",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "B = mu_0*I/(2*pi*r) = (4*pi*1e-7)*10/(2*pi*0.05) = 4e-5 T. Conversion 5 cm -> 0.05 m required.",
+    "implicit_values": {},
+    "expected_equations": [
+      "B = mu_0*I/(2*pi*r)"
+    ],
+    "notes": "Unit conversion + formula application."
+  },
+  {
+    "id": "modern_physics_single_step_01",
+    "domain": "modern_physics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A photon has frequency 6e14 Hz. Find its energy. Take Planck's constant h = 6.626e-34 J*s.",
+    "expected_answer": 3.976e-19,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "E = h*f = 6.626e-34*6e14 = 3.976e-19 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "E = h*f"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "modern_physics_multi_step_chain_01",
+    "domain": "modern_physics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "Light of wavelength 400 nm is incident on a metal surface whose work function is 2.0 eV. Find the maximum kinetic energy of the emitted photoelectrons in joules. Take h*c = 1240 eV*nm and electron charge = 1.6e-19 C.",
+    "expected_answer": 1.76e-19,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Photon energy E_ph = hc/lambda = 1240/400 = 3.1 eV. KE_max = E_ph - phi = 3.1 - 2.0 = 1.1 eV. Convert: 1.1*1.6e-19 = 1.76e-19 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "E_photon = hc/lambda",
+      "KE_max = E_photon - phi"
+    ],
+    "notes": "Photoelectric effect + eV-to-J conversion."
+  },
+  {
+    "id": "modern_physics_implicit_given_01",
+    "domain": "modern_physics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "hard",
+    "question": "An electron is accelerated from rest through a potential difference of 100 V. Find the de Broglie wavelength of the resulting electron. Take electron mass = 9.11e-31 kg, electron charge magnitude = 1.6e-19 C, and Planck's constant = 6.626e-34 J*s.",
+    "expected_answer": 1.227e-10,
+    "expected_unit": "m",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "'From rest' implies initial KE=0. After acceleration KE = eV = 1.6e-17 J. Momentum p = sqrt(2*m*KE) ~ 5.4e-24 kg*m/s. lambda = h/p ~ 1.227e-10 m.",
+    "implicit_values": {
+      "u": 0
+    },
+    "expected_equations": [
+      "KE = e*V",
+      "p = sqrt(2*m*KE)",
+      "lambda = h/p"
+    ],
+    "notes": "Three-step chain with implicit u=0 ('from rest')."
+  },
+  {
+    "id": "momentum_collisions_single_step_01",
+    "domain": "momentum_collisions",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 2 kg object moves with velocity 5 m/s along the positive x-axis. Find the magnitude of its linear momentum.",
+    "expected_answer": 10.0,
+    "expected_unit": "kg*m/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "p = m*v = 2*5 = 10 kg*m/s.",
+    "implicit_values": {},
+    "expected_equations": [
+      "p = m*v"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "momentum_collisions_multi_step_chain_01",
+    "domain": "momentum_collisions",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A 4 kg block moving at 6 m/s collides head-on with a stationary 2 kg block on a frictionless surface. The collision is perfectly inelastic. Find the kinetic energy lost in the collision.",
+    "expected_answer": 24.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Conserve momentum: 4*6 + 2*0 = (4+2)*v_f -> v_f = 4 m/s. KE_initial = 0.5*4*36 = 72 J. KE_final = 0.5*6*16 = 48 J. Lost = 72 - 48 = 24 J.",
+    "implicit_values": {
+      "u2": 0
+    },
+    "expected_equations": [
+      "m1*u1 + m2*u2 = (m1+m2)*v",
+      "KE = 0.5*m*v^2",
+      "dKE = KE_i - KE_f"
+    ],
+    "notes": "Two-step: momentum to derive v_f, then KE difference. Implicit 'stationary' -> u2=0."
+  },
+  {
+    "id": "momentum_collisions_implicit_given_01",
+    "domain": "momentum_collisions",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A 0.2 kg ball moving at 5 m/s strikes a wall perpendicularly and rebounds with the same speed. Find the magnitude of the impulse delivered to the ball by the wall.",
+    "expected_answer": 2.0,
+    "expected_unit": "N*s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "'Rebounds with same speed' implies final velocity = -5 m/s. dv = 10 m/s. J = m*dv = 0.2*10 = 2 N*s.",
+    "implicit_values": {
+      "v_final": -5
+    },
+    "expected_equations": [
+      "J = m * (v_f - v_i)"
+    ],
+    "notes": "Implicit: 'same speed' on rebound means equal magnitude opposite direction. Trap: students compute m*v = 1 N*s."
+  },
+  {
+    "id": "momentum_collisions_symbol_mismatch_or_trap_01",
+    "domain": "momentum_collisions",
+    "reasoning_type": "symbol_mismatch_or_trap",
+    "difficulty": "medium",
+    "question": "Two identical balls of mass 1 kg each undergo a perfectly elastic head-on collision on a frictionless surface. Before the collision, the first ball moves at 8 m/s and the second is at rest. Find the velocity of the first ball after the collision.",
+    "expected_answer": 0.0,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "For equal-mass elastic collision, the velocities are exchanged: v1' = u2 = 0, v2' = u1 = 8 m/s.",
+    "implicit_values": {
+      "u2": 0
+    },
+    "expected_equations": [
+      "For equal masses elastic: v1' = u2, v2' = u1"
+    ],
+    "notes": "Trap: many will instinctively apply the inelastic formula or try to solve the full system. The equal-mass-elastic special case is the clean answer."
+  },
+  {
+    "id": "nuclear_physics_single_step_01",
+    "domain": "nuclear_physics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A radioactive sample initially contains 800 g of a pure isotope whose half-life is 10 days. Find the mass of the isotope remaining after 30 days.",
+    "expected_answer": 100.0,
+    "expected_unit": "g",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "After n half-lives, fraction = (1/2)^n. n = 30/10 = 3. Remaining = 800*(1/8) = 100 g.",
+    "implicit_values": {},
+    "expected_equations": [
+      "N = N_0 * (1/2)^(t/T_half)"
+    ],
+    "notes": "Baseline half-life."
+  },
+  {
+    "id": "nuclear_physics_multi_step_chain_01",
+    "domain": "nuclear_physics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A radioactive isotope has half-life 5 days. Find its decay constant in SI units (per second).",
+    "expected_answer": 1.604e-06,
+    "expected_unit": "1/s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Convert T_half: 5 days = 432000 s. lambda = ln(2)/T_half = 0.6931/432000 ~ 1.604e-6 s^-1.",
+    "implicit_values": {},
+    "expected_equations": [
+      "lambda = ln(2)/T_half"
+    ],
+    "notes": "Unit conversion (days -> s) before formula."
+  },
+  {
+    "id": "nuclear_physics_implicit_given_01",
+    "domain": "nuclear_physics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A radioactive sample has an activity of 8000 Bq. Find its activity after three half-lives have elapsed.",
+    "expected_answer": 1000.0,
+    "expected_unit": "Bq",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Each half-life halves the activity. After 3 half-lives: 8000/8 = 1000 Bq.",
+    "implicit_values": {},
+    "expected_equations": [
+      "A = A_0 * (1/2)^n"
+    ],
+    "notes": "Implicit: 'half-life' means activity halves; n=3 gives factor 1/8."
+  },
+  {
+    "id": "nuclear_physics_underspecified_01",
+    "domain": "nuclear_physics",
+    "reasoning_type": "underspecified",
+    "difficulty": "medium",
+    "question": "A radioactive sample decays over time. Find its activity after one day.",
+    "expected_answer": null,
+    "expected_unit": null,
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Cannot be solved - initial activity (or number of nuclei) and the decay constant (or half-life) are not specified.",
+    "implicit_values": {},
+    "expected_equations": [],
+    "notes": "Two missing inputs (A_0 and lambda); solver must not fabricate either."
+  },
+  {
+    "id": "ray_optics_single_step_01",
+    "domain": "ray_optics",
+    "reasoning_type": "single_step",
+    "difficulty": "medium",
+    "question": "A convex lens has focal length 20 cm. An object is placed 30 cm in front of the lens on its principal axis. Find the distance of the image from the lens (give magnitude in cm).",
+    "expected_answer": 60.0,
+    "expected_unit": "cm",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Using sign convention 1/v - 1/u = 1/f with u = -30 cm, f = +20 cm: 1/v = 1/20 + 1/(-30)... actually 1/v = 1/f + 1/u = 1/20 - 1/30 = 1/60, so v = 60 cm.",
+    "implicit_values": {},
+    "expected_equations": [
+      "1/v - 1/u = 1/f"
+    ],
+    "notes": "Lens formula with sign convention."
+  },
+  {
+    "id": "ray_optics_multi_step_chain_01",
+    "domain": "ray_optics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "An object is placed 30 cm in front of a converging lens and a real image is formed 60 cm from the lens on the opposite side. Find the focal length of the lens (in cm).",
+    "expected_answer": 20.0,
+    "expected_unit": "cm",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Sign convention: u = -30, v = +60. 1/f = 1/v - 1/u = 1/60 + 1/30 = 3/60 = 1/20, so f = 20 cm.",
+    "implicit_values": {
+      "image_type": "real"
+    },
+    "expected_equations": [
+      "1/v - 1/u = 1/f"
+    ],
+    "notes": "Reverse direction: solve for f from image distance."
+  },
+  {
+    "id": "rotational_motion_single_step_01",
+    "domain": "rotational_motion",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A uniform solid disc of mass 2 kg and radius 0.5 m rotates about a fixed axis perpendicular to its plane through its center. Find its moment of inertia about this axis.",
+    "expected_answer": 0.25,
+    "expected_unit": "kg*m^2",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "I_disc = (1/2)*M*R^2 = 0.5*2*0.25 = 0.25 kg*m^2.",
+    "implicit_values": {},
+    "expected_equations": [
+      "I = (1/2)*M*R^2"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "rotational_motion_multi_step_chain_01",
+    "domain": "rotational_motion",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A uniform solid sphere rolls without slipping from rest down a smooth incline through a vertical height of 2 m. Find its speed at the bottom of the incline. Take g = 9.8 m/s^2.",
+    "expected_answer": 5.29,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Energy conservation with rolling: m*g*h = (1/2)*m*v^2 + (1/2)*I*omega^2 with I = (2/5)*m*R^2 and omega = v/R. Gives v^2 = (10/7)*g*h, v = sqrt(10*9.8*2/7) ~ 5.29 m/s.",
+    "implicit_values": {
+      "u": 0,
+      "rolling_without_slipping": true
+    },
+    "expected_equations": [
+      "I_sphere = (2/5)*M*R^2",
+      "m*g*h = 0.5*m*v^2 + 0.5*I*omega^2",
+      "omega = v/R"
+    ],
+    "notes": "Three-relation chain: moment of inertia + rolling constraint + energy conservation. Implicit u=0."
+  },
+  {
+    "id": "rotational_motion_implicit_given_01",
+    "domain": "rotational_motion",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A wheel rotates uniformly, making 300 revolutions per minute. Find its angular velocity.",
+    "expected_answer": 31.416,
+    "expected_unit": "rad/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "300 rpm = 5 rev/s. omega = 2*pi*5 = 10*pi ~ 31.416 rad/s.",
+    "implicit_values": {},
+    "expected_equations": [
+      "omega = 2*pi*f"
+    ],
+    "notes": "Implicit: 'revolutions per minute' must be converted to rad/s via 2*pi/60."
+  },
+  {
+    "id": "sound_single_step_01",
+    "domain": "sound",
+    "reasoning_type": "single_step",
+    "difficulty": "medium",
+    "question": "A stationary source emits sound of frequency 500 Hz. An observer moves directly toward the source at 30 m/s through still air. Find the frequency heard by the observer. Take the speed of sound in air as 340 m/s.",
+    "expected_answer": 544.12,
+    "expected_unit": "Hz",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Doppler (source stationary, observer moving toward): f' = f*(v + v_o)/v = 500*(370)/340 ~ 544.12 Hz.",
+    "implicit_values": {
+      "source_velocity": 0
+    },
+    "expected_equations": [
+      "f' = f*(v + v_o)/v"
+    ],
+    "notes": "Doppler with observer moving toward stationary source."
+  },
+  {
+    "id": "sound_implicit_given_01",
+    "domain": "sound",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "Two tuning forks of frequencies 256 Hz and 260 Hz are sounded together. Find the beat frequency heard.",
+    "expected_answer": 4.0,
+    "expected_unit": "Hz",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Beat frequency = |f1 - f2| = |256 - 260| = 4 Hz.",
+    "implicit_values": {},
+    "expected_equations": [
+      "f_beat = |f1 - f2|"
+    ],
+    "notes": "Implicit: 'sounded together' invokes beats formula."
+  },
+  {
+    "id": "surface_tension_single_step_01",
+    "domain": "surface_tension",
+    "reasoning_type": "single_step",
+    "difficulty": "medium",
+    "question": "A clean capillary tube of radius 0.5 mm is dipped vertically into pure water. Find the height to which water rises in the capillary. Take surface tension of water = 0.072 N/m, contact angle = 0 degrees, density of water = 1000 kg/m^3, and g = 9.8 m/s^2.",
+    "expected_answer": 0.0294,
+    "expected_unit": "m",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "h = 2*T*cos(theta)/(rho*g*r) = 2*0.072*1/(1000*9.8*5e-4) ~ 0.0294 m. (5e-4 m from 0.5 mm.)",
+    "implicit_values": {},
+    "expected_equations": [
+      "h = 2*T*cos(theta)/(rho*g*r)"
+    ],
+    "notes": "Capillary-rise formula + unit conversion."
+  },
+  {
+    "id": "surface_tension_implicit_given_01",
+    "domain": "surface_tension",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A spherical water droplet has radius 1 mm. Find the excess pressure inside the droplet over the surrounding air pressure. Take surface tension of water = 0.072 N/m.",
+    "expected_answer": 144.0,
+    "expected_unit": "Pa",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Spherical droplet (single surface): dP = 2*T/r = 2*0.072/1e-3 = 144 Pa.",
+    "implicit_values": {
+      "surfaces": 1
+    },
+    "expected_equations": [
+      "dP = 2*T/r"
+    ],
+    "notes": "Implicit: 'droplet' (not bubble) has ONE surface, not two. Trap: dP = 4T/r for bubbles."
+  },
+  {
+    "id": "thermal_physics_single_step_01",
+    "domain": "thermal_physics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A 500 g block of water is heated from 20 C to 40 C. Find the heat energy absorbed. Take specific heat capacity of water = 4186 J/(kg*K).",
+    "expected_answer": 41860.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Convert mass: 500 g = 0.5 kg. Q = m*c*dT = 0.5*4186*20 = 41860 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "Q = m*c*dT"
+    ],
+    "notes": "Baseline + unit conversion."
+  },
+  {
+    "id": "thermal_physics_multi_step_chain_01",
+    "domain": "thermal_physics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A copper rod has length 1 m and uniform cross-sectional area 1e-4 m^2. One end is maintained at 100 C and the other at 20 C, and the lateral surface is thermally insulated. Find the steady-state rate of heat flow through the rod. Take thermal conductivity of copper = 400 W/(m*K).",
+    "expected_answer": 3.2,
+    "expected_unit": "W",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Rate of conduction H = k*A*dT/L = 400*1e-4*80/1 = 3.2 W.",
+    "implicit_values": {
+      "lateral_loss": 0
+    },
+    "expected_equations": [
+      "H = k*A*dT/L"
+    ],
+    "notes": "Conduction formula."
+  },
+  {
+    "id": "thermodynamics_single_step_01",
+    "domain": "thermodynamics",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A Carnot engine operates between a hot reservoir at 400 K and a cold reservoir at 300 K. Find its efficiency.",
+    "expected_answer": 0.25,
+    "expected_unit": "dimensionless",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "eta = 1 - T_c/T_h = 1 - 300/400 = 0.25.",
+    "implicit_values": {},
+    "expected_equations": [
+      "eta = 1 - T_c/T_h"
+    ],
+    "notes": "Baseline (temperatures in Kelvin already)."
+  },
+  {
+    "id": "thermodynamics_multi_step_chain_01",
+    "domain": "thermodynamics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "2 moles of an ideal gas undergo a reversible isothermal expansion at 300 K, during which the volume doubles. Find the work done by the gas. Take R = 8.314 J/(mol*K).",
+    "expected_answer": 3457.79,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 2.0,
+    "solution_outline": "Isothermal work: W = n*R*T*ln(V_f/V_i) = 2*8.314*300*ln(2) ~ 3457.79 J.",
+    "implicit_values": {
+      "reversible": true,
+      "ideal_gas": true
+    },
+    "expected_equations": [
+      "W = n*R*T*ln(V_f/V_i)"
+    ],
+    "notes": "Isothermal work formula; ln(2) factor."
+  },
+  {
+    "id": "thermodynamics_implicit_given_01",
+    "domain": "thermodynamics",
+    "reasoning_type": "implicit_given",
+    "difficulty": "medium",
+    "question": "An ideal gas is compressed adiabatically by an external agent that does 2000 J of work on it. Find the change in the internal energy of the gas.",
+    "expected_answer": 2000.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Adiabatic process implies Q = 0. First law: dU = Q - W_by_gas = 0 - (-2000) = 2000 J. (Work done ON gas means W_by_gas = -2000 J.)",
+    "implicit_values": {
+      "Q": 0
+    },
+    "expected_equations": [
+      "dU = Q - W",
+      "adiabatic: Q = 0"
+    ],
+    "notes": "Implicit: 'adiabatic' -> Q=0. Sign convention trap on W."
+  },
+  {
+    "id": "wave_optics_single_step_01",
+    "domain": "wave_optics",
+    "reasoning_type": "single_step",
+    "difficulty": "medium",
+    "question": "In a Young's double-slit experiment, the slit separation is 0.5 mm and the screen is placed 1 m from the slits. The wavelength of light used is 600 nm. Find the fringe width on the screen.",
+    "expected_answer": 0.0012,
+    "expected_unit": "m",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "beta = lambda*D/d = (6e-7)*1/(5e-4) = 1.2e-3 m.",
+    "implicit_values": {},
+    "expected_equations": [
+      "beta = lambda*D/d"
+    ],
+    "notes": "Fringe-width formula. Tests SI conversion (nm, mm)."
+  },
+  {
+    "id": "wave_optics_multi_step_chain_01",
+    "domain": "wave_optics",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "In a Young's double-slit experiment, the slits are 0.1 mm apart and the screen is 2 m away. Light of wavelength 500 nm illuminates the slits. Find the distance of the third bright fringe from the central maximum.",
+    "expected_answer": 0.03,
+    "expected_unit": "m",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Position of n-th bright fringe: y_n = n*lambda*D/d. For n=3: y_3 = 3*(5e-7)*2/(1e-4) = 0.03 m.",
+    "implicit_values": {},
+    "expected_equations": [
+      "y_n = n*lambda*D/d"
+    ],
+    "notes": "Two-step: pick n and compute."
+  },
+  {
+    "id": "waves_single_step_01",
+    "domain": "waves",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A transverse wave on a string has frequency 440 Hz and wavelength 0.75 m. Find its speed of propagation.",
+    "expected_answer": 330.0,
+    "expected_unit": "m/s",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "v = f*lambda = 440*0.75 = 330 m/s.",
+    "implicit_values": {},
+    "expected_equations": [
+      "v = f*lambda"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "waves_multi_step_chain_01",
+    "domain": "waves",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A string of length 1 m and linear mass density 0.01 kg/m is fixed at both ends and held under a tension of 100 N. Find the fundamental frequency of transverse vibrations.",
+    "expected_answer": 50.0,
+    "expected_unit": "Hz",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Wave speed v = sqrt(T/mu) = sqrt(100/0.01) = 100 m/s. Fundamental of string fixed both ends: f_1 = v/(2L) = 100/2 = 50 Hz.",
+    "implicit_values": {
+      "both_ends_fixed": true
+    },
+    "expected_equations": [
+      "v = sqrt(T/mu)",
+      "f_1 = v/(2L)"
+    ],
+    "notes": "Two-step: derive wave speed from tension, then standing-wave frequency."
+  },
+  {
+    "id": "work_energy_power_single_step_01",
+    "domain": "work_energy_power",
+    "reasoning_type": "single_step",
+    "difficulty": "easy",
+    "question": "A force of 50 N is applied to an object at an angle of 60 degrees above the horizontal, and the object is displaced 10 m horizontally. Find the work done by the force.",
+    "expected_answer": 250.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "W = F*d*cos(theta) = 50*10*cos(60) = 50*10*0.5 = 250 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "W = F*d*cos(theta)"
+    ],
+    "notes": "Baseline."
+  },
+  {
+    "id": "work_energy_power_multi_step_chain_01",
+    "domain": "work_energy_power",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "medium",
+    "question": "A 0.5 kg ball is dropped from a height of 20 m above the ground. Find the kinetic energy of the ball just before it strikes the ground. Take g = 9.8 m/s^2 and ignore air resistance.",
+    "expected_answer": 98.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "'Dropped' implies u=0. By energy conservation, KE at impact equals lost PE: KE = m*g*h = 0.5*9.8*20 = 98 J.",
+    "implicit_values": {
+      "u": 0
+    },
+    "expected_equations": [
+      "KE_final = m*g*h",
+      "energy conservation"
+    ],
+    "notes": "Energy conservation chain with implicit u=0."
+  },
+  {
+    "id": "work_energy_power_multi_step_chain_02",
+    "domain": "work_energy_power",
+    "reasoning_type": "multi_step_chain",
+    "difficulty": "hard",
+    "question": "A solid wooden cube with side 0.2 m and density 600 kg/m^3 falls freely from a height of 10 m above the ground in vacuum. Find its kinetic energy just before impact. Take g = 9.8 m/s^2.",
+    "expected_answer": 470.4,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Volume V = 0.008 m^3. Mass m = rho*V = 4.8 kg. 'In vacuum' and 'falls freely' imply no drag and u=0. KE = m*g*h = 4.8*9.8*10 = 470.4 J.",
+    "implicit_values": {
+      "u": 0,
+      "drag": 0
+    },
+    "expected_equations": [
+      "V = L^3",
+      "m = rho*V",
+      "KE = m*g*h"
+    ],
+    "notes": "Density-volume mass chain + two implicit givens (u=0, no drag)."
+  },
+  {
+    "id": "work_energy_power_implicit_given_01",
+    "domain": "work_energy_power",
+    "reasoning_type": "implicit_given",
+    "difficulty": "easy",
+    "question": "A 2 kg object is moving at 10 m/s along a horizontal surface. Find the kinetic energy it currently possesses.",
+    "expected_answer": 100.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Plain-English 'kinetic energy' maps to K = 0.5*m*v^2 = 0.5*2*100 = 100 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "K = 0.5*m*v^2"
+    ],
+    "notes": "Symbol-trap-adjacent: 'kinetic energy' (word) must map to K (symbol). Tests concept-to-symbol grounding."
+  },
+  {
+    "id": "work_energy_power_symbol_mismatch_or_trap_01",
+    "domain": "work_energy_power",
+    "reasoning_type": "symbol_mismatch_or_trap",
+    "difficulty": "easy",
+    "question": "A 3 kg object is held at rest 5 m above the ground. Find the gravitational potential energy of the object relative to the ground. Take g = 9.8 m/s^2.",
+    "expected_answer": 147.0,
+    "expected_unit": "J",
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "U = m*g*h = 3*9.8*5 = 147 J.",
+    "implicit_values": {},
+    "expected_equations": [
+      "U = m*g*h"
+    ],
+    "notes": "Plain-English 'potential energy' must map to U (or V). Ambiguity with V=voltage is a classic symbol clash."
+  },
+  {
+    "id": "work_energy_power_underspecified_01",
+    "domain": "work_energy_power",
+    "reasoning_type": "underspecified",
+    "difficulty": "medium",
+    "question": "An object slides along a rough surface and eventually comes to rest. Find the work done by friction.",
+    "expected_answer": null,
+    "expected_unit": null,
+    "answer_tolerance_pct": 1.0,
+    "solution_outline": "Cannot be solved - mass, initial speed, friction coefficient and distance are all unspecified.",
+    "implicit_values": {},
+    "expected_equations": [],
+    "notes": "Multiple missing inputs; solver should not invent a single 'sample' value."
+  }
+]

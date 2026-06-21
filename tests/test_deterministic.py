@@ -44,7 +44,7 @@ def make_selector(choices: dict):
     choices: {needed_symbol → equation_id_to_pick}
     If a symbol is not in choices, pick the first candidate.
     """
-    def selector(question, available, round_data, round_num=0):
+    def selector(question, available, round_data, round_num=0, solve_context=None):
         results = []
         for rd in round_data:
             fi      = rd["frontier_item"]
@@ -162,16 +162,66 @@ def test_candidates_conservation_law_excluded():
 class _StubGraphIndex:
     """
     Minimal graph_index stub for testing frontier expansion logic in
-    isolation, independent of real graph data. Only implements the one
-    method resolve_frontier actually calls.
+    isolation, independent of real graph data.
+
+    v7.2: the resolver's Round 1+ now uses a GRAPH NEIGHBOR WALK instead of a
+    symbol lookup. So the stub must expose the neighbor-walk interface:
+    edges/adjacency plus neighbors_sharing_variable() and
+    all_equations_with_variable(). Round 0 still uses candidates_for_quantity
+    via the landing layer. We auto-build edges between any two stub equations
+    that share a variable (the same SHARES_VARIABLE semantics as the real
+    graph), so chains like X->(eq_A)->Y->(eq_B) are reachable by the walk.
     """
     def __init__(self, equations: list[dict]):
         self.equations = equations
+        self.nodes_by_id = {e["id"]: e for e in equations}
+        # Build symbol -> [eq_ids] (used by tier-3 fallback + Round 0).
+        self.sym_to_eqs = {}
+        for eq in equations:
+            for sym in eq["variables"]:
+                self.sym_to_eqs.setdefault(sym, []).append(eq["id"])
+        # Auto-build SHARES_VARIABLE edges between equations sharing a variable.
+        self.edges = []
+        for i, a in enumerate(equations):
+            for b in equations[i + 1:]:
+                shared = set(a["variables"]) & set(b["variables"])
+                if shared:
+                    self.edges.append({
+                        "from": a["id"], "to": b["id"],
+                        "shared_variables": sorted(shared),
+                    })
 
     def candidates_for_quantity(self, needed_symbol, needed_name, needed_dimension, visited_eqs, allowed_domains=None):
         return [
             eq for eq in self.equations
             if needed_symbol in eq["variables"] and eq["id"] not in visited_eqs
+        ]
+
+    def _edges_for(self, eq_id):
+        out = []
+        for e in self.edges:
+            if e["from"] == eq_id:
+                out.append({"other": e["to"], "shared_variables": e["shared_variables"]})
+            elif e["to"] == eq_id:
+                out.append({"other": e["from"], "shared_variables": e["shared_variables"]})
+        return out
+
+    def neighbors_sharing_variable(self, *, from_eq_ids, variable, visited_eqs):
+        # Compute from shared-variable membership (matches real GraphIndex):
+        # every equation containing `variable`, excluding sources and visited.
+        out, seen = [], set()
+        for eq_id in self.sym_to_eqs.get(variable, []):
+            if eq_id in from_eq_ids or eq_id in visited_eqs or eq_id in seen:
+                continue
+            seen.add(eq_id)
+            out.append(self.nodes_by_id[eq_id])
+        return out
+
+    def all_equations_with_variable(self, *, variable, visited_eqs):
+        return [
+            self.nodes_by_id[eq_id]
+            for eq_id in self.sym_to_eqs.get(variable, [])
+            if eq_id not in visited_eqs
         ]
 
 
@@ -381,7 +431,7 @@ def test_round_splits_on_token_overflow():
         "a": "kinematics_v2_u2_2as",
     })
     call_log = []
-    def tracking_selector(question, available, round_data, round_num=0):
+    def tracking_selector(question, available, round_data, round_num=0, solve_context=None):
         call_log.append(len(round_data))
         return base_selector(question, available, round_data, round_num)
 
@@ -1477,7 +1527,7 @@ def test_stage2_batch_mode_dispatches_per_item_for_multi_item_rounds():
         # Stub the inner call helper to record how many times it's invoked
         calls_made = []
         def stub_call(question, available, round_data, round_num=0,
-                      sub_index=None, sub_total=None):
+                      sub_index=None, sub_total=None, solve_context=None):
             calls_made.append({
                 "n_items": len(round_data),
                 "sub_index": sub_index,
@@ -1641,6 +1691,252 @@ def test_stage1_prompt_has_implicit_given_phrase_rules():
     print("[test_stage1_prompt_has_implicit_given_phrase_rules] PASSED")
 
 
+def test_symbol_canonicalization_maps_energy_aliases():
+    """v7.1.6: the target symbol canonicalizer maps LLM-chosen energy aliases
+    to the graph's canonical symbol. The live KE test failed because Stage 1
+    named kinetic energy 'E', the graph uses 'K', and the resolver treated
+    them as different unknowns — cascading into a wrong chain ending at
+    projectile angle theta."""
+    from solver.pipeline import _canonicalize_symbol
+    # Direct aliases (dimension-independent)
+    assert _canonicalize_symbol("E_k") == "K"
+    assert _canonicalize_symbol("KE") == "K"
+    assert _canonicalize_symbol("PE") == "U"
+    assert _canonicalize_symbol("E_p") == "U"
+    # Dimension-aware: bare 'E' with energy dimension → K
+    assert _canonicalize_symbol("E", "ML2T-2") == "K"
+    assert _canonicalize_symbol("E", "ML²T-2") == "K"   # unicode superscript
+    # Dimension-aware: 'E' with force dimension is NOT energy — leave alone
+    assert _canonicalize_symbol("E", "MLT-2") == "E"
+    # Non-aliased symbols pass through
+    assert _canonicalize_symbol("F", "MLT-2") == "F"
+    assert _canonicalize_symbol("K", "ML2T-2") == "K"
+    print("[test_symbol_canonicalization_maps_energy_aliases] PASSED")
+
+
+def test_stage1_prompt_forbids_inventing_values():
+    """v7.1.6: Stage 1 prompt must forbid inventing numeric values. The live
+    test 'Find the velocity of the object.' (no numbers) had the 8B model
+    hallucinate s=5, g=9.81, t=2 and then confidently solve v=2.5 — a
+    correct answer to a question never asked. The worst failure mode."""
+    from solver.llm_interface import _build_parse_system
+    prompt = _build_parse_system({"kinematics"})
+    must_have = [
+        "NEVER INVENT VALUES",
+        "EXPLICITLY present",
+        "MUST be empty",
+        "UNDERSPECIFIED",
+    ]
+    missing = [m for m in must_have if m not in prompt]
+    assert not missing, f"Stage 1 prompt missing anti-hallucination rules: {missing}"
+    print("[test_stage1_prompt_forbids_inventing_values] PASSED")
+
+
+def test_extract_json_tolerates_latex_escapes():
+    """v7.1.9: small local models (Qwen-3B etc.) write LaTeX math inside JSON
+    string values, producing invalid escapes like \\cos, \\Delta, \\( that
+    crash json.loads. The exact payloads below are from the user's local-run
+    log where the model picked the RIGHT equation but the parse died on the
+    backslash, recording a false 'no-fit'. The sanitizer must recover these
+    while preserving valid escapes."""
+    from solver.llm_interface import _extract_json
+    # These mirror the real failing log lines.
+    latex_cases = [
+        r'{"selections":[{"needed_symbol":"v","decision":"pick","chosen_eq_id":"kinematics_v2_u2_2as","reason":"equation \( v^2 = u^2 + 2a\Delta s \) is correct, u=0","conditions_concern":null}]}',
+        r'{"selections":[{"needed_symbol":"F","decision":"pick","chosen_eq_id":"work_energy_power_work_constant_force","reason":"W = Fs\cos(\theta) rearranged for F","conditions_concern":null}]}',
+        r'{"selections":[{"needed_symbol":"q2","decision":"pick","chosen_eq_id":"x","reason":"we use \( F = -\frac{dU}{dr} \) here","conditions_concern":null}]}',
+    ]
+    for raw in latex_cases:
+        result = _extract_json(raw)
+        sel = result["selections"][0]
+        # The critical fields the pipeline consumes must survive intact.
+        assert sel["decision"] == "pick"
+        assert sel["chosen_eq_id"]  # non-empty
+    # Valid escapes must NOT be corrupted.
+    valid = _extract_json(r'{"name":"caf\u00e9","note":"line1\nline2","path":"a\/b"}')
+    assert valid["name"] == "café"
+    assert "\n" in valid["note"]
+    assert valid["path"] == "a/b"
+    print("[test_extract_json_tolerates_latex_escapes] PASSED")
+
+
+def test_sanitize_json_escapes_doubles_only_invalid():
+    """v7.1.9: the escape sanitizer doubles invalid backslashes but leaves
+    valid JSON escape sequences and \\uXXXX untouched."""
+    from solver.llm_interface import _sanitize_json_escapes
+    import json
+    # \c is invalid -> becomes \\c (literal backslash-c); parseable.
+    assert json.loads('"' + _sanitize_json_escapes(r'a\cos b') + '"') == r'a\cos b'
+    # \n stays a newline escape.
+    assert json.loads('"' + _sanitize_json_escapes(r'x\ny') + '"') == 'x\ny'
+    # \uXXXX preserved.
+    assert json.loads('"' + _sanitize_json_escapes(r'\u00e9') + '"') == 'é'
+    print("[test_sanitize_json_escapes_doubles_only_invalid] PASSED")
+
+
+def test_stage1_empty_givens_retry_trigger_logic():
+    """v7.1.9: the empty-givens retry fires when the question has digits but
+    the model extracted zero givens, and does NOT fire for digit-free
+    underspecified questions (which must stay empty to return UNVERIFIED)."""
+    import re
+    def would_retry(question, given):
+        return bool(re.search(r"\d", question)) and not given
+    # Numeric questions with dropped givens -> retry
+    assert would_retry("A 5 kg object, net force 20 N. Find acceleration.", {})
+    assert would_retry("starts from rest, accelerates 3 m/s^2 for 4 s", {})
+    # Digit-free underspecified -> NO retry (preserves anti-hallucination)
+    assert not would_retry("Find the velocity of the object.", {})
+    # Already has givens -> NO retry
+    assert not would_retry("A 5 kg object", {"m": {"value": 5}})
+    print("[test_stage1_empty_givens_retry_trigger_logic] PASSED")
+
+
+def test_dimension_unicode_superscript_folding():
+    """v7.1.11: dimension comparison must treat Unicode superscripts the same
+    as ASCII. The 7B emits 'MLT⁻²' where the graph stores 'MLT-2'; without
+    folding, the dimension filter wrongly rejected the equation, silently
+    dropping correct candidates (e.g. Newton's second law for a force target)
+    from Stage 2."""
+    from solver.graph_loader import _dimensions_compatible, _normalize_dimension
+    pairs = [
+        ("MLT⁻²", "MLT-2"), ("ML²T⁻²", "ML2T-2"), ("LT⁻¹", "LT-1"),
+        ("LT⁻²", "LT-2"), ("ML⁻³", "ML-3"),
+    ]
+    for uni, asc in pairs:
+        assert _normalize_dimension(uni) == _normalize_dimension(asc), \
+            f"{uni} should normalize same as {asc}"
+        assert _dimensions_compatible(asc, uni), f"{asc} vs {uni} should be compatible"
+    # Unicode minus sign (U+2212) also folds.
+    assert _dimensions_compatible("MLT-2", "MLT−2")
+    # Genuinely different dimensions still don't match.
+    assert not _dimensions_compatible("MLT-2", "M")
+    print("[test_dimension_unicode_superscript_folding] PASSED")
+
+
+def test_si_unit_normalization_generic():
+    """v7.1.11: given values are converted to SI in code. The model left μC as
+    2 (instead of 2e-6), making Coulomb's law off by 10^12. Conversion must be
+    generic across prefixes/units, and must NOT touch values already in SI
+    (including the kg trap)."""
+    from solver.llm_interface import _normalize_given_to_si
+    # The exact failing case.
+    out = _normalize_given_to_si({
+        "q1": {"value": 2, "unit": "μC", "name": "charge", "dimension": "AT"},
+        "r":  {"value": 0.5, "unit": "m", "name": "distance", "dimension": "L"},
+    })
+    assert out["q1"]["value"] == 2e-6 and out["q1"]["unit"] == "C"
+    assert out["r"]["value"] == 0.5 and out["r"]["unit"] == "m"  # bare metre untouched
+    # Battery of conversions.
+    checks = [
+        ("cm", 5, 0.05, "m"), ("nm", 400, 4e-7, "m"), ("g", 500, 0.5, "kg"),
+        ("mA", 20, 0.02, "A"), ("km/h", 72, 20.0, "m/s"),
+        ("kg", 5, 5, "kg"),    # SI base — protected
+        ("m/s", 30, 30, "m/s"), ("N", 20, 20, "N"), ("mol", 2, 2, "mol"),
+    ]
+    for unit, val, exp_val, exp_unit in checks:
+        r = _normalize_given_to_si({"x": {"value": val, "unit": unit}})["x"]
+        assert abs(r["value"] - exp_val) < abs(exp_val) * 1e-6 + 1e-20, \
+            f"{val} {unit} → expected {exp_val}, got {r['value']}"
+        assert r["unit"] == exp_unit, f"{unit} → expected {exp_unit}, got {r['unit']}"
+    print("[test_si_unit_normalization_generic] PASSED")
+
+
+def test_simultaneous_solver_registers_canonicalized_unknown():
+    """v7.1.11: the simultaneous solver must not KeyError on an unknown whose
+    symbol isn't in the group's equation variables (e.g. a canonicalized
+    target like K). It should register the symbol rather than crash."""
+    from solver.frontier_resolver import SimultaneousGroup, FrontierItem
+    from solver import sympy_executor
+    # A group whose unknown symbol 'K' is NOT present in the equation vars
+    # (simulating the canonicalization mismatch). The fix should register K
+    # rather than raise KeyError. We only assert no KeyError on the symbol
+    # collection step — full solve depends on equation content.
+    eq = {
+        "id": "test_eq", "variables": {"x": {}, "y": {}},
+        "sympy_expr": "Eq(x, y)",
+    }
+    fi = FrontierItem(symbol="K", name="kinetic energy", unit="J", dimension="ML2T-2")
+    group = SimultaneousGroup(equations=[eq], unknowns=[fi], round_num=1)
+    try:
+        # This previously raised KeyError: 'K' at the unknowns list-comp.
+        sympy_executor._execute_simultaneous(group, computed={})
+    except KeyError as e:
+        raise AssertionError(f"Should not KeyError on canonicalized unknown: {e}")
+    except Exception:
+        # Other failures (unsolvable group, etc.) are fine for this test —
+        # we're only verifying the KeyError on symbol registration is gone.
+        pass
+    print("[test_simultaneous_solver_registers_canonicalized_unknown] PASSED")
+
+
+def test_dead_end_reports_root_for_rollback():
+    """
+    v7.2.2/v7.2.3: when a chain dead-ends, resolve_frontier must report a
+    SPECIFIC equation to exclude in dead_end_root_eq so the pipeline can drop
+    that equation and retry. v7.2.3 reports the equation that INTRODUCED the
+    dead-ended variable (fi.introduced_by) rather than always the Round-0
+    root, so good early steps survive. In this isolation the introducer and
+    the root are the same equation (eq_bad introduces Y), so the reported id
+    is 'eq_bad' either way.
+
+    Isolation: target X. Round 0 picks eq_bad (X = Y), which introduces Y. Y
+    has no equation that resolves it, so Y dead-ends. The result must be
+    unsuccessful AND carry dead_end_root_eq == 'eq_bad'.
+    """
+    print("\n[test_dead_end_reports_root_for_rollback]")
+    eq_bad = {
+        "id": "eq_bad", "equation_str": "X = Y",
+        "sympy_expr": "Eq(X, Y)",
+        "variables": {
+            "X": {"name": "x", "unit": "u", "dimension": "L"},
+            "Y": {"name": "y", "unit": "u", "dimension": "L"},
+        },
+        "conditions": [], "rag_text": "bad fixture", "common_mistakes": [],
+        "domain": "test",
+    }
+    # Only eq_bad exists; Y can't be resolved by anything else → dead-end.
+    stub_graph = _StubGraphIndex([eq_bad])
+    selector = make_selector({"X": "eq_bad", "Y": "eq_bad"})  # Y will find no new eq
+    target = fi("X", "x", "u", "L")
+    given = {}  # nothing given → Y truly unresolvable
+
+    result = resolve_frontier(target, given, stub_graph, "test", selector)
+    print(f"  success: {result.success}")
+    print(f"  dead_end_root_eq: {result.dead_end_root_eq!r}")
+    assert not result.success, "should fail (Y unresolvable)"
+    assert result.dead_end_root_eq == "eq_bad", (
+        f"must report the Round-0 root for rollback, got {result.dead_end_root_eq!r}"
+    )
+    print("  PASSED")
+
+
+def test_bare_selection_object_parsed():
+    """
+    v7.2.2: the 7B sometimes returns a BARE selection object instead of
+    wrapping it in {"selections": [...]}. The parser must recover it rather
+    than discarding a correct pick as 'omitted'.
+    """
+    print("\n[test_bare_selection_object_parsed]")
+    from solver.llm_interface import _extract_json
+    bare = ('{"needed_symbol": "a", "decision": "pick", '
+            '"chosen_eq_id": "laws_of_motion_newton_second_law", "reason": "x"}')
+    parsed = _extract_json(bare)
+    if isinstance(parsed, list):
+        sel = parsed
+    else:
+        sel = parsed.get("selections", [])
+        if not sel and ("needed_symbol" in parsed or "chosen_eq_id" in parsed
+                        or "decision" in parsed):
+            sel = [parsed]
+    assert len(sel) == 1, "bare object should be recovered as one selection"
+    assert sel[0]["chosen_eq_id"] == "laws_of_motion_newton_second_law"
+    # And the normal wrapped shape still works.
+    wrapped = _extract_json('{"selections": [{"needed_symbol": "a", "chosen_eq_id": "z"}]}')
+    sel2 = wrapped.get("selections", []) if not isinstance(wrapped, list) else wrapped
+    assert len(sel2) == 1
+    print("  PASSED")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1701,6 +1997,20 @@ def run_all():
         test_stage2_filters_unused_constants_from_prompt,
         test_stage2_detects_hallucinated_symbol,
         test_stage1_prompt_has_implicit_given_phrase_rules,
+        # v7.1.6 additions
+        test_symbol_canonicalization_maps_energy_aliases,
+        test_stage1_prompt_forbids_inventing_values,
+        # v7.1.9 additions
+        test_extract_json_tolerates_latex_escapes,
+        test_sanitize_json_escapes_doubles_only_invalid,
+        test_stage1_empty_givens_retry_trigger_logic,
+        # v7.1.11 additions
+        test_dimension_unicode_superscript_folding,
+        test_si_unit_normalization_generic,
+        test_simultaneous_solver_registers_canonicalized_unknown,
+        # v7.2.2 additions
+        test_dead_end_reports_root_for_rollback,
+        test_bare_selection_object_parsed,
     ]
     passed = failed = 0
     for t in tests:

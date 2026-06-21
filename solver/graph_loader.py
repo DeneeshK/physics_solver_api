@@ -65,6 +65,23 @@ def _normalize_dimension(dim: str) -> tuple:
     """
     if not dim:
         return ()
+    # v7.1.11: fold Unicode superscript digits and the Unicode minus sign to
+    # ASCII before parsing. The LLM (especially the 7B) emits dimensions
+    # inconsistently — sometimes "MLT-2" (ASCII), sometimes "MLT⁻²" (Unicode
+    # superscripts). The graph stores ASCII. Without this fold, "MLT⁻²" fails
+    # to match "MLT-2": the regex doesn't recognize ⁻² as an exponent, so it
+    # parses as MLT (all exponent 1) and the dimension-compatibility check
+    # wrongly rejects the equation. This silently dropped correct candidates
+    # (e.g. Newton's second law for a force target) from Stage 2. The fold is
+    # generic — it fixes dimension matching for every symbol and equation,
+    # not any specific case.
+    _SUPERSCRIPT_MAP = str.maketrans({
+        "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+        "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+        "⁺": "+", "⁻": "-",          # Unicode superscript plus/minus
+        "−": "-",                     # Unicode MINUS SIGN (U+2212) → ASCII hyphen
+    })
+    dim = dim.translate(_SUPERSCRIPT_MAP)
     cleaned = dim.replace("^", "").replace("*", "").replace(" ", "")
     if cleaned.lower() == 'varies':
         # Sentinel: never compatible with any real dimension. Use a marker
@@ -185,6 +202,104 @@ class GraphIndex:
             for eq_id in self.sym_to_eqs.get(sym, [])
             if eq_id in self.nodes_by_id
         ]
+
+    # ── Neighbor-walk (v7.2 traversal core) ────────────────────────────────────
+    # The graph stores equation→equation edges with `shared_variables`. To chase
+    # a variable mid-chain (e.g. need `m` after choosing F=ma), we walk to the
+    # neighbors of the equations already chosen that SHARE that variable. This
+    # replaces the flat sym_to_eqs symbol-gate for later hops: instead of "every
+    # equation literally containing m", we get "the equations connected to what
+    # we've already chosen, through m" — a small, relevant neighborhood the LLM
+    # judges by meaning. No dimension rejection; no symbol-presence gate.
+
+    def _edges_for(self, eq_id: str) -> list[dict]:
+        """All edges incident to eq_id, normalized so 'other' is the neighbor
+        and 'shared_variables' is present."""
+        out = []
+        for e in self.edges:
+            if e.get("from") == eq_id:
+                out.append({"other": e.get("to"),
+                            "shared_variables": e.get("shared_variables", [])})
+            elif e.get("to") == eq_id:
+                out.append({"other": e.get("from"),
+                            "shared_variables": e.get("shared_variables", [])})
+        return out
+
+    def neighbors_sharing_variable(
+        self,
+        *,
+        from_eq_ids: set[str],
+        variable: str,
+        visited_eqs: set[str],
+    ) -> list[dict]:
+        """
+        The equations connected to what we've already chosen THROUGH `variable`
+        — i.e. the equations that also contain `variable`, excluding the
+        sources and anything visited. Returns equation node dicts (unordered;
+        the LLM chooses). Dimension/symbol are NOT used to reject.
+
+        v7.2 design note — why this computes from variable membership, not the
+        precomputed `edges`: the graph's edge list is an incomplete snapshot
+        (e.g. F=ma and v²=u²+2as both contain `a` but have no edge between
+        them). Computing neighbors directly from sym_to_eqs[variable] is the
+        TRUE bipartite traversal — sym_to_eqs[variable] IS the variable-node's
+        adjacency list (every equation touching that variable), so it can never
+        miss a real connection. This realizes the "reach the variable's node
+        and look at its neighbors" design exactly, and is robust to a stale or
+        sparse edge list.
+
+        The `from_eq_ids` argument is kept for interface symmetry and possible
+        future edge-weighting, but reachability is by shared variable: any
+        equation containing `variable` is reachable from any chosen equation
+        that also contains it. Since the chosen equations are what introduced
+        `variable` into the frontier, they contain it by construction.
+
+        The design assumption (user-stated): a question's quantities are
+        connected, so the equation that resolves `variable` is reachable this
+        way. If nothing comes back, the caller rolls back to Round-0
+        candidates — we never fall back to a global semantic search, which
+        would only surface unconnected equations.
+        """
+        out = []
+        seen: set[str] = set()
+        for eq_id in self.sym_to_eqs.get(variable, []):
+            if eq_id in from_eq_ids or eq_id in visited_eqs or eq_id in seen:
+                continue
+            node = self.nodes_by_id.get(eq_id)
+            if node is None:
+                continue
+            # Skip pure conservation/non-solvable forms (same exclusion the
+            # symbol route used) — these aren't usable to SOLVE for a value.
+            if set(node["variables"].keys()) & NON_SOLVABLE_SYMBOLS:
+                continue
+            seen.add(eq_id)
+            out.append(node)
+        return out
+
+    def all_equations_with_variable(
+        self,
+        *,
+        variable: str,
+        visited_eqs: set[str],
+    ) -> list[dict]:
+        """
+        The widest LOCAL fallback when neighbor-walk yields nothing usable but
+        before rolling back: every equation in the graph that contains
+        `variable` (still not a semantic/global concept search — just the
+        variable-membership set). Kept available for the resolver's fallback
+        tier. No dimension rejection.
+        """
+        out = []
+        for eq_id in self.sym_to_eqs.get(variable, []):
+            if eq_id in visited_eqs:
+                continue
+            node = self.nodes_by_id.get(eq_id)
+            if node is None:
+                continue
+            if set(node["variables"].keys()) & NON_SOLVABLE_SYMBOLS:
+                continue
+            out.append(node)
+        return out
 
     # ── §5 Symbol-collision guardrail ─────────────────────────────────────────
 

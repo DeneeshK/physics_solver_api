@@ -175,6 +175,78 @@ def get_landing_candidates(
     return out
 
 
+def get_neighbor_candidates(
+    *,
+    graph_index,
+    target_symbol:  str,
+    from_eq_ids:    set,
+    visited_eqs:    set,
+    search_query:   str = "",
+    retriever=None,
+    top_k:          int = 8,
+) -> list[dict]:
+    """
+    v7.2 — Round 1+ candidate generation by GRAPH NEIGHBOR WALK, not symbol
+    lookup or semantic search.
+
+    When chasing a variable introduced mid-chain (e.g. `m` after choosing
+    F=ma), the candidates are the graph neighbors of the equations already
+    chosen that SHARE that variable. The graph's edges encode "these two
+    equations share variable X", so this walks to exactly the equations
+    connected, through `target_symbol`, to what we've already committed to.
+
+    v7.2.1 — RANK-AND-CAP for large neighbor sets. Neighbor sets are tiny for
+    rare variables (mass ~5) but large for common ones (velocity ~37), and
+    dumping 37 equations overloads the model (it stops choosing and starts
+    chatting). When a retriever + search_query are supplied AND the set
+    exceeds top_k, we ORDER the neighbors by relevance to the question and
+    show the top_k. This is ordering, NOT rejection — every neighbor stays
+    reachable; those below the cut just aren't shown this view, and the
+    fallback tiers still apply. Small sets (<= top_k) are shown whole.
+
+    Tiers (the caller — resolver — handles roll back as the final tier):
+      Tier 1/2: neighbors_sharing_variable(from chosen eqs, via target_symbol),
+                then rank-and-cap to top_k if a retriever is available.
+      Tier 3 (local fallback): if the neighbor walk yields NOTHING, widen to
+                all_equations_with_variable (still LOCAL, not a global
+                semantic search), also rank-and-capped.
+
+    No symbol-presence gate (the walk IS the reachability), no dimension
+    rejection. Returns equation-node dicts tagged with landing_source.
+    """
+    # Tier 1/2: neighbor walk from the equations already chosen.
+    neighbors = graph_index.neighbors_sharing_variable(
+        from_eq_ids = from_eq_ids,
+        variable    = target_symbol,
+        visited_eqs = visited_eqs,
+    )
+    out = []
+    for node in neighbors:
+        n = dict(node)
+        n["landing_source"] = "neighbor"
+        out.append(n)
+
+    if out:
+        # Rank-and-cap only when the set is large and we can rank it.
+        if retriever is not None and search_query and len(out) > top_k:
+            out = retriever.rank_candidates(search_query, out, top_k=top_k)
+        return out
+
+    # Tier 3 (local fallback): equations containing the variable at all.
+    # Still local (variable-membership), never a global semantic search.
+    fallback = graph_index.all_equations_with_variable(
+        variable    = target_symbol,
+        visited_eqs = visited_eqs,
+    )
+    for node in fallback:
+        n = dict(node)
+        n["landing_source"] = "variable_fallback"
+        out.append(n)
+    if retriever is not None and search_query and len(out) > top_k:
+        out = retriever.rank_candidates(search_query, out, top_k=top_k)
+    return out
+
+
 def is_chroma_landing_enabled(retriever_or_none) -> bool:
     """Just a readability helper. Used in logging."""
     return retriever_or_none is not None
