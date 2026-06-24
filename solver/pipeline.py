@@ -91,6 +91,71 @@ def _canonicalize_symbol(sym: str, dimension: str = "") -> str:
     return sym
 
 
+def _canonicalize_given_symbols(
+    given_meta: dict, target_sym: str
+) -> tuple[dict, dict]:
+    """
+    v7.2.6: Canonicalize Stage-1 GIVEN symbols to the graph's naming.
+
+    Previously _canonicalize_symbol() ran on the unknown target ONLY, so when
+    Stage 1 named a *given* quantity differently from the graph (e.g. it gave
+    `l=1.0` for a pendulum whose equation uses `L`), the resolver saw `L` as a
+    fresh unknown, launched a neighbor walk, and the model — correctly — found
+    nothing fitting. The failure audit traced ~66% of failures to exactly this
+    Stage-1 ↔ graph symbol gap. This closes it on the given side.
+
+    Collision guard — the reason this isn't a blind dict-remap:
+
+      Some aliases collapse a family of Stage-1 symbols onto one graph symbol
+      (m1, m2 → m; rho_block, rho_water → rho). When a single problem supplies
+      TWO members of such a family, remapping both would silently overwrite one
+      given's value with the other's. So a remap is skipped whenever its
+      canonical form would:
+        - be the canonical form of another given this round (m1 AND m2 → m), or
+        - already exist as a literal given key (problem gives both `l` and `L`),
+          or
+        - collide with the (already-canonicalized) unknown target symbol.
+
+      Such collapsing cases (e.g. two-body collisions, buoyancy with two
+      densities) need per-equation instantiation, not aliasing; leaving them
+      un-mapped preserves both values rather than corrupting the chain.
+
+    Returns (new_given_meta, applied) where `applied` is {original: canonical}
+    for logging.
+    """
+    if not given_meta:
+        return given_meta, {}
+
+    # Pass 1 — compute each given's candidate canonical form.
+    candidate: dict[str, str] = {}
+    for sym, meta in given_meta.items():
+        dim = meta.get("dimension", "") if isinstance(meta, dict) else ""
+        candidate[sym] = _canonicalize_symbol(sym, dim)
+
+    # How many givens want each canonical name? (>1 ⇒ family collision.)
+    from collections import Counter
+    canon_demand = Counter(candidate.values())
+
+    new_meta: dict = {}
+    applied: dict = {}
+    for sym, meta in given_meta.items():
+        canon = candidate[sym]
+        if canon == sym:
+            new_meta[sym] = meta
+            continue
+        collides = (
+            canon_demand[canon] > 1     # two givens fight for the same name
+            or canon in given_meta      # canonical name is itself a literal given
+            or canon == target_sym      # would shadow the unknown
+        )
+        if collides:
+            new_meta[sym] = meta        # keep original — never destroy a value
+            continue
+        new_meta[canon] = meta
+        applied[sym] = canon
+    return new_meta, applied
+
+
 @dataclass
 class SolverResponse:
     question:        str
@@ -181,6 +246,16 @@ class PhysicsSolver:
             target_sym = canon_sym
             unknown = dict(unknown)
             unknown["symbol"] = canon_sym
+
+        # v7.2.6: canonicalize GIVEN symbols too (collision-guarded). Without
+        # this, a given named `l`/`mu_k`/`lambda` etc. by Stage 1 does not match
+        # the graph's `L`/`mu`/`lambda_`, so the resolver treats the quantity as
+        # an unsolved unknown and the chain dead-ends. See the audit: this was
+        # the single dominant failure mode.
+        given_meta, _given_applied = _canonicalize_given_symbols(given_meta, target_sym)
+        if _given_applied:
+            from solver.solver_log import log
+            log("given_symbols_canonicalized", mapping=_given_applied)
 
         search_query = parsed.get("search_query", "")  # v7: for Chroma landing
         # Hint only — candidates_for_quantity() falls back to the full set

@@ -415,6 +415,7 @@ def _normalize_given_to_si(given: dict) -> dict:
         "m", "g", "s", "A", "C", "V", "N", "J", "W", "Pa", "Hz", "T",
         "F", "H", "ohm", "Ω", "mol", "eV", "Wb", "rad",
     }
+    from math import pi as _PI
     # Explicit whole-unit conversions (non-prefix or compound). value*factor,
     # and the SI unit the value becomes.
     EXPLICIT = {
@@ -441,7 +442,36 @@ def _normalize_given_to_si(given: dict) -> dict:
         "MPa":    (1e6, "Pa"),
         "GPa":    (1e9, "Pa"),
         "tonne":  (1e3, "kg"), "t": (1e3, "kg"),
+        # v7.2.6: angles. SymPy's trig functions take RADIANS, so an angle the
+        # model leaves in degrees (the audit's W = F·s·cosθ case gave -476 J
+        # instead of 250 J because cos(60 rad) ≈ -0.95 was computed instead of
+        # cos(60°)=0.5). Convert at the given stage so every downstream sin/cos
+        # is correct.
+        "degree":  (_PI / 180.0, "rad"), "degrees": (_PI / 180.0, "rad"),
+        "deg":     (_PI / 180.0, "rad"), "°": (_PI / 180.0, "rad"),
     }
+    # v7.2.6: spelled-out SI prefixes. The 7B emits "microC" / "microcoulomb"
+    # as a unit string (the audit's Coulomb's-law case used 1 C instead of
+    # 1e-6 C → 8.99e11 N instead of 0.9 N). The symbol-prefix matcher below
+    # only knew the single-char forms (μ, u, m, k …); these word forms slipped
+    # through untouched. Expanded just-in-time into the symbol prefix.
+    SPELLED_PREFIX = {
+        "yotta": 1e24, "zetta": 1e21, "exa": 1e18, "peta": 1e15, "tera": 1e12,
+        "giga": 1e9, "mega": 1e6, "kilo": 1e3, "hecto": 1e2, "deca": 1e1,
+        "deci": 1e-1, "centi": 1e-2, "milli": 1e-3, "micro": 1e-6,
+        "nano": 1e-9, "pico": 1e-12, "femto": 1e-15, "atto": 1e-18,
+    }
+    # Spelled-out base units → their SI symbol (singular; plural handled below).
+    SPELLED_BASE = {
+        "metre": "m", "meter": "m", "gram": "g", "second": "s",
+        "ampere": "A", "amp": "A", "coulomb": "C", "volt": "V",
+        "newton": "N", "joule": "J", "watt": "W", "pascal": "Pa",
+        "hertz": "Hz", "tesla": "T", "farad": "F", "henry": "H",
+        "ohm": "ohm", "mole": "mol", "weber": "Wb", "radian": "rad",
+    }
+    # Whole spelled SI base units that must NOT be re-decomposed by the prefix
+    # logic (kilogram IS the SI base of mass; it is not kilo×gram-needing-scale).
+    SPELLED_SI_PROTECTED = {"kilogram": (1.0, "kg"), "kilograms": (1.0, "kg")}
 
     def _convert_one(value, unit):
         if value is None or not isinstance(value, (int, float)):
@@ -460,6 +490,29 @@ def _normalize_given_to_si(given: dict) -> dict:
         if u in EXPLICIT:
             f, si = EXPLICIT[u]
             return value * f, si
+        # 1a) Spelled-out angle / unit lowercase fallthrough (the model often
+        #     capitalizes inconsistently: "Degrees", "Degree").
+        if u.lower() in EXPLICIT:
+            f, si = EXPLICIT[u.lower()]
+            return value * f, si
+        # 1b) Whole spelled SI base units that must not be decomposed (kilogram).
+        if u.lower() in SPELLED_SI_PROTECTED:
+            f, si = SPELLED_SI_PROTECTED[u.lower()]
+            return value * f, si
+        # 1c) Spelled-out prefix (+ symbol or spelled base): microC,
+        #     microcoulomb, millimetre, nanometre, etc. The prefix word is
+        #     matched case-insensitively; the base may be a symbol (case kept:
+        #     'C' = coulomb) or a spelled word (lowercased, trailing plural 's'
+        #     stripped).
+        low = u.lower()
+        for pre_word, pfactor in SPELLED_PREFIX.items():
+            if low.startswith(pre_word) and len(u) > len(pre_word):
+                rest = u[len(pre_word):]            # case preserved for symbols
+                if rest in BASE_UNITS:              # microC → C
+                    return value * pfactor, rest
+                rest_word = rest.lower().rstrip("s")  # microcoulombs → coulomb
+                if rest_word in SPELLED_BASE:
+                    return value * pfactor, SPELLED_BASE[rest_word]
         # 2) Prefix + base unit (e.g. μC, kPa-not-here, nm-handled-above, mA).
         #    Try the longest matching prefix so 'da' wins over 'd'.
         for plen in (2, 1):
@@ -481,7 +534,10 @@ def _normalize_given_to_si(given: dict) -> dict:
             continue
         new_meta = dict(meta)
         nv, nu = _convert_one(meta.get("value"), meta.get("unit"))
-        if nv != meta.get("value"):
+        # Record the conversion when EITHER the value or the unit string
+        # changed. A unit-only change happens for factor-1 SI renames such as
+        # 'kilogram'→'kg' (value identical, label normalized).
+        if nv != meta.get("value") or nu != meta.get("unit"):
             new_meta["value"] = nv
             new_meta["unit"] = nu
             new_meta["_si_converted_from"] = meta.get("unit")

@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .venv/
 physics_venv/
+analysis_findings.md
+architecture_analysis.md
+chroma_db/

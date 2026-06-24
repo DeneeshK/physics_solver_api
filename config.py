@@ -22,7 +22,13 @@ COLLECTION_NAME    = "physics_equations"
 EMBED_MODEL        = "BAAI/bge-large-en-v1.5"
 BGE_QUERY_PREFIX   = "Represent this sentence for searching relevant passages: "
 HYBRID_ALPHA       = 0.6
-RAG_TOP_K          = 5     # Stage 2 landing: top-K seed equations from ChromaDB
+RAG_TOP_K          = 10    # Stage 2 landing: top-K seed equations from ChromaDB
+#                            v7.2.6: raised 5→10. The Round-0 landing is a
+#                            SEQUENTIAL scan (LANDING_TOP_K = max(RAG_TOP_K,8))
+#                            that commits to the first concept-fitting node, so
+#                            a deeper list costs ~nothing on the happy path but
+#                            recovers correct equations that retrieval ranked
+#                            just outside the old top-8 (e.g. shm_period_pendulum).
 GRAPH_HOPS         = 1     # legacy expand_neighbors hop count (unused by frontier_resolver)
 
 # Feature flag: ChromaDB landing is additive — when enabled and the index
@@ -95,17 +101,84 @@ NON_SOLVABLE_SYMBOLS = {'constant'}
 # Only add entries where the two symbols unambiguously mean the SAME quantity
 # with the SAME dimension. When in doubt, leave it out — a wrong alias mapping
 # is worse than none.
+#
+# v7.2.6: extended after the failure audit. The dominant failure mode (~66%
+# of failed questions) was Stage 1 emitting a natural-notation symbol that
+# the graph names differently. Every alias below was validated against the
+# graph's actual variable table: the canonical (value) form EXISTS in the
+# graph and the alias (key) form does NOT, so the mapping can only help —
+# it never shadows a real graph symbol. Two deliberately-excluded cases:
+#   - 'C' → 'C_cap':  REJECTED. The graph uses bare 'C' for capacitance in
+#     most capacitor equations (C=q/V, parallel-plate, energy); only the
+#     equivalence/reactance nodes use 'C_cap'. Aliasing C→C_cap would BREAK
+#     the C-using equations. That graph-internal inconsistency is a data fix,
+#     not an alias.
+#   - 'R' → 'R_e':    handled dimension-aware below, because bare 'R' is also
+#     projectile RANGE (dimension L) in kinematics_projectile_range.
 SYMBOL_ALIASES = {
     # Kinetic energy: graph uses K
     'E_k':  'K',
     'Ek':   'K',
     'KE':   'K',
     'E_kin': 'K',
+    'K_max': 'K',     # max KE (photoelectric) — same quantity, same dimension
+    'KE_max': 'K',
+    'KE_lost': 'K',
     # Potential energy: graph uses U
     'E_p':  'U',
     'Ep':   'U',
     'PE':   'U',
     'E_pot': 'U',
+    # Wavelength: graph uses lambda_ (bare 'lambda' is a Python keyword and
+    # absent from the graph; all 8 wavelength nodes use lambda_).
+    'lambda':     'lambda_',
+    'wavelength': 'lambda_',
+    # Coefficient of friction: graph uses a single 'mu' for both kinetic and
+    # static. Stage 1 distinguishes them; the graph does not. (When a problem
+    # gives BOTH mu_k and mu_s, the given-symbol canonicalizer's collision
+    # guard leaves them un-mapped so neither given is destroyed.)
+    'mu_k': 'mu',
+    'mu_s': 'mu',
+    'muk':  'mu',
+    'mus':  'mu',
+    # AC reactance notation variants: graph uses X_L, X_C.
+    'XL':  'X_L',
+    'XC':  'X_C',
+    'X_l': 'X_L',
+    'X_c': 'X_C',
+    # AC rms quantities: the graph's I and V in the AC equations ARE the rms
+    # values; Stage 1 often tags them Irms/Vrms.
+    'Irms':  'I',
+    'I_rms': 'I',
+    'Vrms':  'V',
+    'V_rms': 'V',
+    # Length: graph uses 'L' (no bare lowercase 'l' anywhere in the graph).
+    'l': 'L',
+    # Centripetal accel/force: graph has only 'a' and 'F' (no a_c / F_c).
+    'a_c': 'a',
+    'F_c': 'F',
+    # Initial/final velocity: graph uses kinematics 'u' (initial), 'v' (final).
+    'v_initial': 'u',
+    'v_final':   'v',
+    'v_i': 'u',
+    'v_f': 'v',
+    'u_i': 'u',
+    # Indexed masses (collisions): graph uses a single 'm'. Collision-guarded
+    # for givens so m1 and m2 are not collapsed onto each other.
+    'm1': 'm',
+    'm2': 'm',
+    'm_1': 'm',
+    'm_2': 'm',
+    # Density variants: graph uses a single 'rho'. Collision-guarded for givens
+    # (buoyancy gives rho_block AND rho_water — those stay distinct).
+    'rho_block':  'rho',
+    'rho_water':  'rho',
+    'rho_object': 'rho',
+    'rho_body':   'rho',
+    'rho_fluid':  'rho',
+    'rho_liquid': 'rho',
+    'rho_sphere': 'rho',
+    'rho_ball':   'rho',
     # Note: bare 'E' is deliberately NOT mapped — it's ambiguous (could be
     # energy, electric field, EMF, Young's modulus). The dimension-aware
     # canonicalizer below handles 'E' contextually.
@@ -117,6 +190,13 @@ SYMBOL_ALIASES = {
 SYMBOL_ALIASES_BY_DIMENSION = {
     'E': {
         'ML2T-2': 'K',   # energy dimension → kinetic energy (most common 'E' in mechanics)
+    },
+    # Bare 'R' is overloaded: resistance (graph: R_e) vs projectile range
+    # (graph: R, dimension L). Only remap to R_e when Stage 1 reports the
+    # electrical-resistance dimension; a range query (dimension L) is left as
+    # 'R' so kinematics_projectile_range still matches.
+    'R': {
+        'ML2T-3A-2': 'R_e',
     },
 }
 
