@@ -38,6 +38,45 @@ def get_graph():
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+class StubRetriever:
+    """
+    v7.2.4: Round 0 is now a pure-semantic sequential scan, so resolver tests
+    need a retriever. This stub returns a FIXED ranked list of equation nodes
+    (looked up from the graph by id) as the 'semantic' search result, in the
+    given order, with descending scores.
+
+    `priority_ids` (optional) are equation ids that rank_candidates floats to
+    the top before capping — used so a known bridging equation (e.g.
+    general_density_definition for mass) survives the neighbor-walk cap in
+    deterministic tests, where the real semantic ranker isn't available to
+    score it. This keeps tests faithful to the live path (cap + rank) while
+    ensuring the equation the mock intends to pick is actually shown.
+    """
+    def __init__(self, graph_index, landing_order, priority_ids=None):
+        self._gi = graph_index
+        self._priority = set(priority_ids or [])
+        self._nodes = []
+        for i, eid in enumerate(landing_order):
+            node = self._lookup(eid)
+            if node is not None:
+                self._nodes.append({"node": node, "score": 1.0 - i * 0.01,
+                                    "semantic_score": 1.0 - i * 0.01, "bm25_score": 0.5})
+
+    def _lookup(self, eid):
+        if hasattr(self._gi, "nodes_by_id"):
+            return self._gi.nodes_by_id.get(eid)
+        return next((n for n in self._gi.nodes if n["id"] == eid), None)
+
+    def search(self, query, top_k=5):
+        return self._nodes[:top_k]
+
+    def rank_candidates(self, query, candidates, top_k=8):
+        # Priority ids first (stable), then the rest in their given order.
+        prio = [c for c in candidates if c["id"] in self._priority]
+        rest = [c for c in candidates if c["id"] not in self._priority]
+        return (prio + rest)[:top_k]
+
+
 def make_selector(choices: dict):
     """
     Build a mock llm_round_fn.
@@ -269,7 +308,9 @@ def test_already_targeted_symbol_not_reintroduced():
     target = fi("X", "x quantity", "u", "L")
     given = {"Z": {"value": 5, "unit": "u", "name": "z quantity", "dimension": "L"}}
 
-    result = resolve_frontier(target, given, stub_graph, "test question", selector)
+    result = resolve_frontier(target, given, stub_graph, "test question", selector,
+                              retriever=StubRetriever(stub_graph, ["eq_A", "eq_B"]),
+                              search_query="test question")
 
     print(f"  success: {result.success}")
     print(f"  plan shape: {[type(s).__name__ for s in result.plan]}")
@@ -417,13 +458,18 @@ def test_domain_filter_fixes_real_overflow_scenario():
 
 def test_round_splits_on_token_overflow():
     """
-    Without a domain hint (worst case), the m+a round after picking F=m*a
-    is large enough to exceed budget. Confirm resolve_frontier's safety
-    valve splits it into separate single-symbol calls instead of sending
-    one oversized batched call — this is the actual fix for the 413 crash,
-    independent of whether domain filtering also helped.
+    The overflow safety valve: when a multi-item round's candidate prompt
+    would exceed the per-round token budget, resolve_frontier splits it into
+    separate single-symbol LLM calls instead of one oversized batched call
+    (the fix for the 413 crash). v7.2.4: with concept-level rag_texts and the
+    neighbor cap, a real m+a round no longer naturally exceeds the default
+    4000-token budget, so we force the condition by patching the threshold
+    very low for this test — that genuinely exercises the split path. The
+    chain still resolves correctly (priority_ids surface density), so we can
+    assert BOTH that the split fired AND that the answer is right.
     """
     print("\n[test_round_splits_on_token_overflow]")
+    import config as _cfg
     g = get_graph()
     base_selector = make_selector({
         "F": "laws_of_motion_newton_second_law",
@@ -443,9 +489,20 @@ def test_round_splits_on_token_overflow():
         "v":   {"value": 30.0, "unit": "m/s",    "name": "final velocity",   "dimension": "LT-1"},
         "s":   {"value": 40.0, "unit": "m",      "name": "displacement",     "dimension": "L"},
     }
-    # Deliberately no allowed_domains — forces the large candidate sets for
-    # m and a, so the safety valve (not domain filtering) is what's tested.
-    result = resolve_frontier(target, given, g, "test question", tracking_selector)
+    # Force the overflow condition: patch the per-round budget to a tiny value
+    # so ANY 2-item round exceeds it and must split. priority_ids keep density
+    # reachable so the chain still completes correctly.
+    saved = _cfg.MAX_CANDIDATES_TOKENS_PER_ROUND
+    try:
+        _cfg.MAX_CANDIDATES_TOKENS_PER_ROUND = 1  # any 2-item round now overflows
+        result = resolve_frontier(target, given, g, "test question", tracking_selector,
+                                  retriever=StubRetriever(
+                                      g, ["laws_of_motion_newton_second_law"],
+                                      priority_ids=["general_density_definition",
+                                                    "kinematics_v2_u2_2as"]),
+                                  search_query="test question")
+    finally:
+        _cfg.MAX_CANDIDATES_TOKENS_PER_ROUND = saved
 
     print(f"  round_data lengths per LLM call: {call_log}")
     assert result.success, f"resolution should still succeed: {result.failure_reason}"
@@ -486,6 +543,14 @@ FMVA_MOCK_CHOICES = {
     "a": "kinematics_v2_u2_2as",              # v² = u² + 2as  → a
 }
 
+# v7.2.4: Round-0 semantic scan needs a retriever. The landing node for FMVA
+# is Newton's second law; list it first so the scan lands on it.
+FMVA_LANDING_ORDER = [
+    "laws_of_motion_newton_second_law",
+    "fluid_mechanics_buoyant_force",   # the tempting-but-wrong alternative, lower
+    "rotational_motion_torque_inertia",
+]
+
 
 def test_frontier_happy_path():
     """
@@ -502,6 +567,8 @@ def test_frontier_happy_path():
         graph_index  = g,
         question     = FMVA_QUESTION,
         llm_round_fn = selector,
+        retriever    = StubRetriever(g, FMVA_LANDING_ORDER, priority_ids=list(FMVA_MOCK_CHOICES.values())),
+        search_query = FMVA_QUESTION,
     )
 
     print(f"  success: {result.success}")
@@ -538,6 +605,7 @@ def test_decision_log_populated():
     result   = resolve_frontier(
         target=FMVA_TARGET, given=FMVA_GIVEN,
         graph_index=g, question=FMVA_QUESTION, llm_round_fn=selector,
+        retriever=StubRetriever(g, FMVA_LANDING_ORDER, priority_ids=list(FMVA_MOCK_CHOICES.values())), search_query=FMVA_QUESTION,
     )
     log = result.decision_log
     assert len(log) == 3, f"Expected 3 decisions (F, m, a), got {len(log)}"
@@ -568,6 +636,7 @@ def test_sympy_exact_fractions():
     result   = resolve_frontier(
         target=FMVA_TARGET, given=FMVA_GIVEN,
         graph_index=g, question=FMVA_QUESTION, llm_round_fn=selector,
+        retriever=StubRetriever(g, FMVA_LANDING_ORDER, priority_ids=list(FMVA_MOCK_CHOICES.values())), search_query=FMVA_QUESTION,
     )
 
     given_values = {sym: meta["value"] for sym, meta in FMVA_GIVEN.items()}
@@ -617,6 +686,7 @@ def test_trace_strings():
     result   = resolve_frontier(
         target=FMVA_TARGET, given=FMVA_GIVEN,
         graph_index=g, question=FMVA_QUESTION, llm_round_fn=selector,
+        retriever=StubRetriever(g, FMVA_LANDING_ORDER, priority_ids=list(FMVA_MOCK_CHOICES.values())), search_query=FMVA_QUESTION,
     )
     given_values = {sym: meta["value"] for sym, meta in FMVA_GIVEN.items()}
     exec_result  = execute_plan(
@@ -782,6 +852,7 @@ def test_regression_fmva_full():
     result   = resolve_frontier(
         target=FMVA_TARGET, given=FMVA_GIVEN,
         graph_index=g, question=FMVA_QUESTION, llm_round_fn=selector,
+        retriever=StubRetriever(g, FMVA_LANDING_ORDER, priority_ids=list(FMVA_MOCK_CHOICES.values())), search_query=FMVA_QUESTION,
     )
     assert result.success
     given_values = {sym: meta["value"] for sym, meta in FMVA_GIVEN.items()}
@@ -969,59 +1040,56 @@ def test_landing_layer_falls_through_when_no_retriever():
 
 
 def test_landing_layer_unions_symbol_and_semantic():
-    """v7: when a mock retriever surfaces an extra equation by semantic
-    match (one not in the symbol candidates), the landing layer adds it
-    with landing_source='semantic'. When the mock surfaces an equation
-    that's also in the symbol set, it's promoted to landing_source='both'."""
-    from solver.landing import get_landing_candidates
+    """v7.2.4: Round-0 landing is now PURE semantic vector search (the symbol-
+    table union was removed — it dumped every equation containing the target
+    symbol, e.g. all 21 with 'F', overloading the model). This test pins the
+    new behavior: get_landing_candidates_semantic returns exactly the
+    retriever's top-k nodes, in rank order, each tagged 'semantic', with
+    visited/excluded nodes filtered out — and NOTHING from a symbol table."""
+    from solver.landing import get_landing_candidates_semantic
     graph = get_graph()
 
-    # Build a mock retriever that surfaces:
-    #   - one equation already in symbol candidates (should be promoted to 'both')
-    #   - one equation NOT in symbol candidates (should be added as 'semantic')
-    sym_only = graph.candidates_for_quantity("F", "force", "MLT-2", set(), None)
-    shared_eq = sym_only[0]   # exists in symbol set
-    # Pick something definitely outside the symbol-F set — gravitational PE
-    extra_eq = next(n for n in graph.nodes
-                    if n["id"] == "work_energy_power_gravitational_potential_mgh")
-    # Sanity — extra_eq does have F? No, it uses U. So it's not in symbol-F set.
-    assert "F" not in extra_eq["variables"]
+    newton = graph.nodes_by_id["laws_of_motion_newton_second_law"]
+    torque = graph.nodes_by_id["rotational_motion_torque_inertia"]
+    weight = graph.nodes_by_id["laws_of_motion_weight"]
 
     class MockRetriever:
+        def rank_candidates(self, query, candidates, top_k=8):
+            return list(candidates)[:top_k]
         def search(self, query, top_k=5):
             return [
-                {"node": shared_eq, "score": 0.9, "semantic_score": 0.9, "bm25_score": 0.5},
-                {"node": extra_eq,  "score": 0.7, "semantic_score": 0.6, "bm25_score": 0.4},
+                {"node": newton, "score": 0.99, "semantic_score": 0.99, "bm25_score": 0.9},
+                {"node": torque, "score": 0.80, "semantic_score": 0.80, "bm25_score": 0.7},
+                {"node": weight, "score": 0.70, "semantic_score": 0.70, "bm25_score": 0.6},
             ]
 
-    cands = get_landing_candidates(
-        graph_index      = graph,
-        target_symbol    = "F",
-        target_name      = "force",
-        target_dimension = "MLT-2",
-        search_query     = "test query",
-        visited_eqs      = set(),
-        allowed_domains  = None,
-        retriever        = MockRetriever(),
+    cands = get_landing_candidates_semantic(
+        retriever    = MockRetriever(),
+        search_query = "find the net force on a body that accelerates",
+        visited_eqs  = set(),
+        top_k        = 8,
     )
-    by_id = {c["id"]: c for c in cands}
-    # shared_eq promoted to 'both'
-    assert by_id[shared_eq["id"]]["landing_source"] == "both", \
-        f"shared_eq should be 'both', got {by_id[shared_eq['id']]['landing_source']}"
-    # extra_eq added as 'semantic'
-    assert extra_eq["id"] in by_id
-    assert by_id[extra_eq["id"]]["landing_source"] == "semantic"
-    # All other symbol candidates still tagged 'symbol'
-    for c in cands:
-        if c["id"] not in {shared_eq["id"], extra_eq["id"]}:
-            assert c["landing_source"] == "symbol"
-    # Safety property: every symbol-set candidate is still present
-    sym_ids = {c["id"] for c in sym_only}
-    out_ids = {c["id"] for c in cands}
-    assert sym_ids.issubset(out_ids), \
-        "Landing union must include ALL symbol candidates (no removal)"
-    print(f"[test_landing_layer_unions_symbol_and_semantic] "
-          f"sym={len(sym_only)}, +semantic-only=1, total={len(cands)} — PASSED")
+    # Exactly the retrieved nodes, in order, all tagged 'semantic'.
+    assert [c["id"] for c in cands] == [
+        "laws_of_motion_newton_second_law",
+        "rotational_motion_torque_inertia",
+        "laws_of_motion_weight",
+    ], f"landing must be the ranked semantic list, got {[c['id'] for c in cands]}"
+    assert all(c["landing_source"] == "semantic" for c in cands)
+
+    # Excluded/visited nodes are filtered out, and the scan continues down.
+    cands2 = get_landing_candidates_semantic(
+        retriever    = MockRetriever(),
+        search_query = "q",
+        visited_eqs  = {"laws_of_motion_newton_second_law"},
+        top_k        = 8,
+    )
+    assert "laws_of_motion_newton_second_law" not in {c["id"] for c in cands2}, \
+        "a visited/excluded node must not be re-offered by the landing scan"
+    assert cands2[0]["id"] == "rotational_motion_torque_inertia", \
+        "scan must continue with the next-ranked node after exclusion"
+    print("[test_landing_layer_unions_symbol_and_semantic] "
+          "pure-semantic ranked landing + exclusion — PASSED")
 
 
 def test_landing_layer_drops_dimensionally_incompatible_semantic_candidates():
@@ -1043,6 +1111,8 @@ def test_landing_layer_drops_dimensionally_incompatible_semantic_candidates():
     assert vol_eq is not None, "Need at least one volume-V equation in graph"
 
     class MockRetriever:
+        def rank_candidates(self, query, candidates, top_k=8):
+            return list(candidates)[:top_k]
         def search(self, query, top_k=5):
             return [{"node": vol_eq, "score": 0.9,
                      "semantic_score": 0.9, "bm25_score": 0.5}]
@@ -1162,14 +1232,16 @@ def test_decision_log_records_candidates_shown():
         "s":   {"value": 40,   "unit": "m",      "name": "displ",    "dimension": "L"},
     }
     selector = make_selector({
-        "F": "laws_of_motion_newtons_second_law",
+        "F": "laws_of_motion_newton_second_law",
         "a": "kinematics_v2_u2_2as",
     })
     res = resolve_frontier(
         target=target, given=given, graph_index=graph,
         question="test", llm_round_fn=selector,
         search_query="find the net force on a body that accelerates",
-        retriever=None,
+        retriever=StubRetriever(graph, ["laws_of_motion_newton_second_law"],
+                                priority_ids=["general_density_definition",
+                                              "kinematics_v2_u2_2as"]),
     )
     assert res.success
     assert len(res.decision_log) >= 1
@@ -1900,12 +1972,14 @@ def test_dead_end_reports_root_for_rollback():
     target = fi("X", "x", "u", "L")
     given = {}  # nothing given → Y truly unresolvable
 
-    result = resolve_frontier(target, given, stub_graph, "test", selector)
+    result = resolve_frontier(target, given, stub_graph, "test", selector,
+                              retriever=StubRetriever(stub_graph, ["eq_bad"]),
+                              search_query="test")
     print(f"  success: {result.success}")
     print(f"  dead_end_root_eq: {result.dead_end_root_eq!r}")
     assert not result.success, "should fail (Y unresolvable)"
     assert result.dead_end_root_eq == "eq_bad", (
-        f"must report the Round-0 root for rollback, got {result.dead_end_root_eq!r}"
+        f"must report the culprit equation for rollback, got {result.dead_end_root_eq!r}"
     )
     print("  PASSED")
 

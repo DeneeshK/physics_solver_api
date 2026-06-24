@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from config import PHYSICAL_CONSTANTS, MAX_CHAIN_DEPTH
+from solver.solver_log import log
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -148,6 +149,58 @@ def _merge_cycles(
 
 # ── Main frontier resolution loop ─────────────────────────────────────────────
 
+def _deepest_culprit_on_branch(failed_fi, chosen_steps: list) -> str:
+    """
+    v7.2.5 — pick the equation to exclude when chasing `failed_fi` dead-ends.
+
+    The bad pick is the DEEPEST equation on the branch that led to this
+    dead-end — the one whose own required inputs we ultimately couldn't
+    satisfy — NOT the shallow equation that first asked for `failed_fi`, and
+    never the round-0 landing if there's anything deeper to blame. This keeps a
+    correct landing (e.g. K=½mv²) committed while the retry re-picks the
+    genuinely faulty deeper step.
+
+    We reconstruct the branch by following `introduced_by` links: the failed
+    item was introduced by some equation; that equation was chosen while
+    solving some variable, which was itself introduced by an earlier equation,
+    and so on back toward the landing. Among the equations actually CHOSEN on
+    that branch (i.e. present in chosen_steps), return the one with the highest
+    round_num that is not the sole round-0 landing. Returns "" if the only
+    candidate is the landing itself (caller then falls back).
+    """
+    if not chosen_steps:
+        return ""
+    by_eqid = {s.equation["id"]: s for s in chosen_steps}
+
+    # Walk the branch: start from the equation that introduced the failed item,
+    # then hop to the step that introduced THAT equation's solved symbol, etc.
+    branch_steps = []
+    seen = set()
+    eqid = getattr(failed_fi, "introduced_by", None)
+    while eqid and eqid in by_eqid and eqid not in seen:
+        seen.add(eqid)
+        step = by_eqid[eqid]
+        branch_steps.append(step)
+        # Hop up: which step introduced the variable THIS step solves for?
+        intro = None
+        for s in chosen_steps:
+            if s.solves_for.symbol == step.solves_for.symbol:
+                intro = getattr(s.solves_for, "introduced_by", None)
+                break
+        eqid = intro if intro and intro != eqid else None
+
+    if not branch_steps:
+        return ""
+    # Prefer the deepest (highest round) non-landing equation on the branch.
+    non_landing = [s for s in branch_steps if s.round_num > 0]
+    pick_from = non_landing or branch_steps
+    deepest = max(pick_from, key=lambda s: s.round_num)
+    # Never return a round-0 landing if a deeper step exists on the branch.
+    if deepest.round_num == 0 and non_landing:
+        deepest = max(non_landing, key=lambda s: s.round_num)
+    return deepest.equation["id"]
+
+
 def resolve_frontier(
     target:         FrontierItem,
     given:          dict[str, dict],  # {symbol: {value, unit, name, dimension}}
@@ -194,8 +247,16 @@ def resolve_frontier(
     # FrontierItem from this module), and lets the module be imported
     # cheaply in test contexts that don't exercise these paths.
     from solver.llm_interface import estimate_round_tokens
-    from solver.landing       import get_landing_candidates, get_neighbor_candidates
-    from config               import MAX_CANDIDATES_TOKENS_PER_ROUND
+    from solver.landing       import (get_landing_candidates,
+                                      get_landing_candidates_semantic,
+                                      get_neighbor_candidates)
+    from config               import MAX_CANDIDATES_TOKENS_PER_ROUND, RAG_TOP_K
+
+    # v7.2.4: how many top-similarity nodes the Round-0 sequential scan walks.
+    # The scan asks the LLM "does this concept fit?" per node, top-down, and
+    # commits to the first that fits. Kept small (the right starting concept
+    # for a well-formed question is reliably in the top handful).
+    LANDING_TOP_K = max(RAG_TOP_K, 8)
 
     if excluded_eqs is None:
         excluded_eqs = set()
@@ -212,45 +273,114 @@ def resolve_frontier(
         if not frontier:
             break
 
-        # ── Step 1: Generate candidates for each frontier item ────────────────
-        # Round 0 (initial landing) uses the unified landing layer: symbol
-        # candidates UNIONED with semantic candidates from ChromaDB (if
-        # available). Round 1+ uses the same landing layer but with no
-        # semantic query (symbol-only), AND with knowns-overlap re-ranking
-        # enabled — equations that share more variables with what we
-        # already have bubble to the top, so the bridging equation
-        # (e.g. rho=m/V when we need m and have rho, V) ranks first.
-        # v7.1.4: pass known_symbols + round_num for the re-ranking step.
         round_data = []
-        # Compute the set of currently-known symbols (those with a resolved
-        # value in `available`). This is what we treat as "what we already
-        # have" for the overlap-ranking logic.
+        # Currently-known symbols — "what we already have" for the
+        # knowns-overlap ranking (Round 1+) and the state document.
         known_symbols = {sym for sym, meta in available.items()
                          if meta.get("value") is not None}
-        for fi in frontier:
-            if round_num == 0:
-                candidates = get_landing_candidates(
-                    graph_index      = graph_index,
-                    target_symbol    = fi.symbol,
-                    target_name      = fi.name,
-                    target_dimension = fi.dimension,
-                    search_query     = search_query,
-                    visited_eqs      = visited_eqs,
-                    allowed_domains  = allowed_domains,
-                    retriever        = retriever,
-                    known_symbols    = known_symbols,
-                    round_num        = round_num,
+        # ── Steps 1+2 differ by round ────────────────────────────────────────
+        # v7.2.4: Round 0 (initial landing) is now a SEQUENTIAL SCAN down the
+        # pure-semantic ranked list — the user's design. We retrieve the top_k
+        # most similar equations (vector search only; no symbol-table source,
+        # no domain filter) and walk them ONE AT A TIME in similarity order,
+        # asking the LLM "does this equation's concept match the question?" per
+        # node. The first node the LLM accepts becomes the landing equation;
+        # rejected nodes are skipped; if the committed chain later dead-ends,
+        # the node is excluded and the next attempt resumes the scan further
+        # down the (stable) list. Round 1+ keeps the graph neighbor-walk with
+        # the batched selector call.
+        # v7.2.5: the STATE DOCUMENT carried into every decision (the user's
+        # design). It always reflects the live solve: the ultimate goal, the
+        # variables we ALREADY HAVE (givens + everything solved so far, with
+        # names so the model knows rho=density, V=volume, ...), the committed
+        # steps, and the unknowns STILL LEFT to solve. The available list only
+        # grows — a known is never removed just because an equation used it
+        # (it stays reusable, which handles a variable feeding several
+        # sub-problems). `remaining` shrinks as each unknown is resolved.
+        known_named = [
+            {"symbol": sym, "name": meta.get("name", sym)}
+            for sym, meta in available.items()
+            if meta.get("value") is not None
+            and sym not in PHYSICAL_CONSTANTS
+        ]
+        remaining_unknowns = [
+            {"symbol": fi.symbol, "name": fi.name} for fi in frontier
+        ]
+        solve_context = {
+            "goal_symbol":  target.symbol,
+            "goal_name":    target.name,
+            "chosen_steps": [
+                {"symbol": s.solves_for.symbol, "eq_str": s.equation["equation_str"]}
+                for s in chosen_steps
+            ],
+            "being_solved": sorted({s.solves_for.symbol for s in chosen_steps}),
+            "available":    known_named,
+            "remaining":    remaining_unknowns,
+        }
+
+        if round_num == 0:
+            fi = frontier[0]  # Round 0 always has exactly one item: the target
+            ranked = get_landing_candidates_semantic(
+                retriever    = retriever,
+                search_query = search_query,
+                visited_eqs  = visited_eqs,
+                top_k        = LANDING_TOP_K,
+            )
+            log("landing_scan_start", target=fi.symbol,
+                n_ranked=len(ranked),
+                ranked_ids=[c["id"] for c in ranked])
+            selections = []
+            scan_pos = 0
+            for scan_pos, cand in enumerate(ranked):
+                # Ask the LLM about THIS ONE node only: does its concept fit?
+                one = [{"frontier_item": fi, "candidates": [cand]}]
+                sel = llm_round_fn(
+                    question=question,
+                    available=available,
+                    round_data=one,
+                    round_num=round_num,
+                    solve_context=solve_context,
                 )
-            else:
-                # Round 1+ (v7.2): GRAPH NEIGHBOR WALK, not symbol lookup or
-                # semantic search. We're chasing `fi.symbol`, a variable some
-                # already-chosen equation introduced. Candidates = the graph
+                picked = sel and sel[0].get("chosen_eq") is not None
+                log("landing_scan_node",
+                    rank=scan_pos,
+                    eq_id=cand["id"],
+                    score=cand.get("_retrieval_score"),
+                    decision="pick" if picked else "reject",
+                    reason=(sel[0].get("reason", "") if sel else ""))
+                if picked:
+                    selections = sel
+                    break
+                # rejected → continue down the ranked list to the next node
+            if not selections:
+                # Walked the whole ranked list; the LLM accepted none. For a
+                # well-formed question the right concept is in the top_k, so
+                # this means genuinely no equation fits (e.g. underspecified
+                # question) → fail UNVERIFIED. No node to exclude.
+                reason_for_failure = (
+                    f"Landing scan rejected all {len(ranked)} retrieved "
+                    f"candidate(s) for '{fi.symbol}' — no equation's concept "
+                    f"matched the question."
+                    if ranked else
+                    f"No equations retrieved for '{fi.symbol}' "
+                    f"(empty semantic result)."
+                )
+                log("landing_scan_exhausted",
+                    target=fi.symbol, n_ranked=len(ranked))
+                return ResolutionResult(
+                    plan=[], final_symbol=target.symbol, success=False,
+                    failure_reason=reason_for_failure,
+                    decision_log=decision_log,
+                    status="UNVERIFIED",
+                    dead_end_root_eq="",
+                )
+        else:
+            # ── Round 1+ : graph neighbor-walk + batched selector call ─────────
+            round_data = []
+            for fi in frontier:
+                # GRAPH NEIGHBOR WALK — chasing `fi.symbol`, a variable some
+                # already-chosen equation introduced. Candidates = graph
                 # neighbors of the chosen equations that SHARE this variable.
-                # The walk-from anchor is every equation chosen so far
-                # (chosen_steps) plus the specific equation that introduced
-                # this item (fi.introduced_by). Showing the small neighbor set
-                # raw lets the LLM judge fit by meaning — no symbol gate, no
-                # dimension reject, no re-ranking.
                 walk_from = {s.equation["id"] for s in chosen_steps}
                 if fi.introduced_by:
                     walk_from.add(fi.introduced_by)
@@ -261,42 +391,28 @@ def resolve_frontier(
                     visited_eqs   = visited_eqs,
                     search_query  = search_query,
                     retriever     = retriever,
+                    known_symbols = known_symbols,
                 )
-            round_data.append({"frontier_item": fi, "candidates": candidates})
+                round_data.append({"frontier_item": fi, "candidates": candidates})
 
-        # ── Step 2: Batched LLM call — split if this round risks oversize ─────
-        # v7.2.3: assemble the SMALL agentic working memory — the ultimate
-        # goal, the committed steps, and the symbols already being solved —
-        # so each sub-decision is aware of the whole solve and can reject a
-        # candidate that conflicts with the plan (e.g. F=m*g for mass while
-        # F is the goal and a is already handled). Only committed steps.
-        solve_context = {
-            "goal_symbol":  target.symbol,
-            "goal_name":    target.name,
-            "chosen_steps": [
-                {"symbol": s.solves_for.symbol, "eq_str": s.equation["equation_str"]}
-                for s in chosen_steps
-            ],
-            "being_solved": sorted({s.solves_for.symbol for s in chosen_steps}),
-        }
-        if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
-            selections = []
-            for rd in round_data:
-                selections.extend(llm_round_fn(
+            if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
+                selections = []
+                for rd in round_data:
+                    selections.extend(llm_round_fn(
+                        question=question,
+                        available=available,
+                        round_data=[rd],
+                        round_num=round_num,
+                        solve_context=solve_context,
+                    ))
+            else:
+                selections = llm_round_fn(
                     question=question,
                     available=available,
-                    round_data=[rd],
+                    round_data=round_data,
                     round_num=round_num,
                     solve_context=solve_context,
-                ))
-        else:
-            selections = llm_round_fn(
-                question=question,
-                available=available,
-                round_data=round_data,
-                round_num=round_num,
-                solve_context=solve_context,
-            )
+                )
 
         # ── Step 3: Apply picks, build next frontier ──────────────────────────
         new_frontier: list[FrontierItem] = []
@@ -368,18 +484,24 @@ def resolve_frontier(
                     ],
                     "decision":           "none",
                 })
-                # v7.2.3: report the SPECIFIC equation to exclude so the
-                # pipeline rolls back the actual culprit, not the whole chain.
-                # When chasing fi dead-ends, the equation at fault is the one
-                # that INTRODUCED fi (fi.introduced_by) — that deeper pick is
-                # what led down a dead branch (e.g. choosing F=m*g for mass
-                # introduced a path that can't close). Excluding it lets the
-                # retry re-pick THAT step while keeping the good root and good
-                # earlier steps intact. This fixes the v7.2.2 bug where banning
-                # the Round-0 root discarded correct starting equations (which
-                # broke the kinetic-energy chain). Fall back to the root only
-                # if fi has no recorded introducer (it was the main unknown).
-                culprit_eq = fi.introduced_by or ""
+                # v7.2.5: report the SPECIFIC equation to exclude so the
+                # pipeline re-picks the actual culprit, NEVER the good landing.
+                # When chasing `fi` dead-ends, the bad pick is the DEEPEST
+                # equation on the failed branch — the one whose own inputs we
+                # couldn't meet — not the shallow equation that merely asked
+                # for `fi`. The previous logic blamed `fi.introduced_by`, which
+                # for a sub-variable directly under the landing node IS the
+                # landing node, so a deep dead-end (e.g. K=½mv² → v → u → s, and
+                # `s` can't close) wrongly banned K=½mv² and it vanished from the
+                # next retrieval. We instead walk the chosen steps along the
+                # branch that introduced `fi` and exclude the deepest one, so
+                # the retry re-picks THAT step and keeps the correct landing +
+                # all good earlier steps. `fi.introduced_by` is the fallback for
+                # a direct first-level miss; the landing node is excluded only
+                # when it is itself the sole step (nothing deeper to blame).
+                culprit_eq = _deepest_culprit_on_branch(fi, chosen_steps)
+                if not culprit_eq:
+                    culprit_eq = fi.introduced_by or ""
                 if not culprit_eq:
                     for s in chosen_steps:
                         if s.round_num == 0:

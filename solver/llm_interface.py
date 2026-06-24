@@ -274,6 +274,15 @@ Always parse phrase-implied numerics into the given dict. The downstream
 solver treats missing-symbol and known-zero-value DIFFERENTLY: known-zero
 unblocks chains, missing forces an extra round that often fails.
 
+BEFORE YOU EMIT — REST-PHRASE SELF-CHECK (do this every time):
+Scan the question once more for the phrases "rest", "from rest", "starts
+from rest", "released", "dropped", "comes to rest", "comes to a stop". For
+EACH one present, the corresponding zero MUST already be a numeric entry in
+your "given" dict (u=0 for starting/released/dropped, v=0 for coming to
+rest). If it is not, add it now. A rest phrase with no matching zero in
+"given" is a bug — the solver cannot recover the zero later, and the chain
+will fail to close. This is the single most common omission; verify it.
+
 DIMENSIONAL FORMULAS
 - M=mass, L=length, T=time, A=current, K=temperature, N=amount of substance.
   Examples: force=MLT-2, velocity=LT-1, acceleration=LT-2, mass=M,
@@ -977,18 +986,45 @@ def _round_select_call(
         goal_name = solve_context.get("goal_name", "")
         steps     = solve_context.get("chosen_steps", [])  # [{symbol,eq_str,concept}]
         being_solved = solve_context.get("being_solved", [])  # [symbols]
+        available_named = solve_context.get("available", [])  # [{symbol,name}]
+        remaining_named = solve_context.get("remaining", [])  # [{symbol,name}]
         lines = []
         if goal_sym:
             lines.append(f"SOLVING FOR (ultimate goal): {goal_sym}"
                          + (f" ({goal_name})" if goal_name else ""))
+        # v7.2.5 STATE DOCUMENT: the live picture the model reasons over.
+        # Spell out the named variables we ALREADY HAVE so it can ask "which of
+        # these connects to the quantity I'm chasing?" (e.g. to find mass, it
+        # has rho=density and V=volume → density m=rho*V is the natural pick,
+        # not weight). This list grows as unknowns are solved; knowns are never
+        # removed (a quantity can feed several sub-derivations).
+        if available_named:
+            lines.append("VARIABLES YOU ALREADY HAVE (use these to find what's left): "
+                         + ", ".join(f"{a['symbol']} ({a['name']})"
+                                     for a in available_named))
         if steps:
             lines.append("SOLUTION SO FAR (already chosen — do not re-derive or contradict these):")
             for s in steps:
                 lines.append(f"  • {s['symbol']} ← {s['eq_str']}")
+        # The remaining open unknowns, updated every round as each is solved.
+        if remaining_named:
+            lines.append("STILL TO SOLVE (open unknowns remaining): "
+                         + ", ".join(f"{r['symbol']} ({r['name']})"
+                                     for r in remaining_named))
         if being_solved:
             lines.append("SYMBOLS ALREADY BEING SOLVED (do NOT pick an equation that "
                          "re-introduces or conflicts with these): "
                          + ", ".join(being_solved))
+            # v7.2.5: the goal-collision principle, stated generally. The trap
+            # (picking weight F=m*g to get mass while solving for net force F)
+            # is one instance: an equation that contains a symbol you are
+            # already solving imposes a SECOND, independent definition of it,
+            # which contradicts the equation you already committed to. State the
+            # rule, not the specific case, so it generalizes.
+            lines.append("  → An equation containing any of those symbols would define "
+                         "the SAME quantity a second way, contradicting what you have "
+                         "already chosen. Pick an equation that produces the needed "
+                         "quantity from the variables you ALREADY HAVE instead.")
         if lines:
             context_block = "\n".join(lines) + "\n\n"
 
