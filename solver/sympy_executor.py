@@ -37,6 +37,53 @@ CONSTANT_VALUES: dict[str, object] = {
 # Symbols that can legitimately be negative (keep sign in root selection)
 SIGNED_SYMBOLS = {"v", "u", "a", "F", "W", "emf", "q", "DeltaT"}
 
+# ── Wall-clock guard for runaway SymPy calls ──────────────────────────────────
+# solve()/evalf() are CPU-bound and can spin for many minutes on a transcendental
+# or high-degree system — e.g. a spurious simultaneous group sent solve() into
+# polynomial factorization (dup_zz_factor → Zassenhaus) that ran >15 min and had
+# to be killed mid-eval. try/except cannot stop that: it is not an exception,
+# just a loop that never returns. A SIGALRM deadline converts the runaway into a
+# catchable error so the step fails cleanly and the resolver backtracks instead
+# of wedging the whole run.
+import signal as _signal
+import threading as _threading
+
+# Per-call ceiling. A legitimate JEE/NEET step solves in well under a second;
+# anything past this is a runaway, not a slow-but-valid computation.
+SOLVE_TIMEOUT_S = 8
+
+
+class _SympyTimeout(Exception):
+    """Raised when a guarded SymPy call exceeds SOLVE_TIMEOUT_S."""
+
+
+class _time_limit:
+    """Best-effort wall-clock guard. Active only on a Unix process's main
+    thread (where SIGALRM is deliverable); anywhere else it is a no-op, so it
+    degrades to the prior behavior rather than ever crashing. SymPy's hot loops
+    are pure Python, so the alarm is delivered between bytecodes and propagates."""
+
+    def __init__(self, seconds: int = SOLVE_TIMEOUT_S):
+        self.seconds = max(1, int(seconds))
+        self._active = False
+
+    def __enter__(self):
+        if (_threading.current_thread() is _threading.main_thread()
+                and hasattr(_signal, "SIGALRM")):
+            self._old = _signal.signal(_signal.SIGALRM, self._fire)
+            _signal.alarm(self.seconds)
+            self._active = True
+        return self
+
+    def _fire(self, *_a):
+        raise _SympyTimeout()
+
+    def __exit__(self, *_a):
+        if self._active:
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, self._old)
+        return False
+
 
 # ── Output data structures ────────────────────────────────────────────────────
 
@@ -167,7 +214,15 @@ def execute_plan(
 
 def _execute_step(step, computed: dict) -> list[StepTrace] | None:
     eq_node   = step.equation
-    solve_sym = step.solves_for.symbol
+    # v8: the LLM bound the equation onto the problem. `output_var` is the
+    # equation variable to solve; each other variable's value comes from
+    # `value_binding[var]` (a given symbol, a constant, or a previously-solved
+    # quantity). The result is stored under `resolves_symbol` (the quantity this
+    # step resolves), which may differ from output_var. No symbol matching here.
+    output_var = getattr(step, "output_var", "") or step.solves_for.symbol
+    resolves   = getattr(step, "resolves_symbol", "") or step.solves_for.symbol
+    binding    = getattr(step, "value_binding", None) or {}
+    literals   = getattr(step, "literal_values", None) or {}
 
     var_syms = {s: symbols(s) for s in eq_node["variables"]}
     ns       = {**SYMPY_NS, **var_syms}
@@ -177,40 +232,60 @@ def _execute_step(step, computed: dict) -> list[StepTrace] | None:
     except Exception as e:
         raise ValueError(f"Failed to parse sympy_expr '{eq_node['sympy_expr']}': {e}")
 
-    # Substitution dict — exact values for all known symbols except the target
+    if output_var not in var_syms:
+        return None
+
+    # Substitute every variable except the output, pulling its value through the
+    # LLM's binding (falling back to the same symbol, which also covers constants
+    # already seeded in `computed`).
     subs = {}
     for sym_str, sym_obj in var_syms.items():
-        if sym_str == solve_sym:
+        if sym_str == output_var:
             continue
-        if sym_str in computed:
+        # A term the LLM bound to a literal (e.g. a vanishing X_C = 0) takes
+        # precedence — there is no source quantity to look up.
+        if sym_str in literals:
+            subs[sym_obj] = nsimplify(literals[sym_str])
+            continue
+        src = binding.get(sym_str, sym_str)
+        if src in computed:
+            subs[sym_obj] = computed[src]
+        elif sym_str in computed:
             subs[sym_obj] = computed[sym_str]
 
     substituted_eq = sympy_eq.subs(subs)
-    target_obj     = var_syms[solve_sym]
+    target_obj     = var_syms[output_var]
 
     try:
-        solutions = solve(substituted_eq, target_obj)
+        with _time_limit():
+            solutions = solve(substituted_eq, target_obj)
+    except _SympyTimeout:
+        from solver.solver_log import log
+        log("sympy_solve_timeout", solving_for=output_var,
+            equation=eq_node.get("equation_str", ""), limit_s=SOLVE_TIMEOUT_S)
+        return None
     except Exception:
         return None
 
     if not solutions:
         return None
 
-    value = _pick_best_solution(solutions, solve_sym)
+    value = _pick_best_solution(solutions, output_var)
     if value is None:
         return None
 
     # Build trace strings
-    symbolic_str    = _eq_to_str(sympy_eq, solve_sym, var_syms)
-    substituted_str = _eq_to_str(substituted_eq, solve_sym, var_syms)
-    result_str      = f"{solve_sym} = {value}"
+    symbolic_str    = _eq_to_str(sympy_eq, output_var, var_syms)
+    substituted_str = _eq_to_str(substituted_eq, output_var, var_syms)
+    result_str      = f"{resolves} = {value}"
 
     try:
-        float_val = float(sympy_N(value))
+        with _time_limit():
+            float_val = float(sympy_N(value))
     except Exception:
         float_val = 0.0
 
-    unit = eq_node["variables"].get(solve_sym, {}).get("unit", "")
+    unit = eq_node["variables"].get(output_var, {}).get("unit", "")
     if " or " in unit:
         unit = unit.split(" or ")[0].strip()
 
@@ -218,11 +293,11 @@ def _execute_step(step, computed: dict) -> list[StepTrace] | None:
         symbolic=symbolic_str,
         substituted=substituted_str,
         result_exact=result_str,
-        result_float=f"{solve_sym} = {_format_float(float_val)}",
+        result_float=f"{resolves} = {_format_float(float_val)}",
     )
     return [StepTrace(
         equation_str=eq_node["equation_str"],
-        solving_for=solve_sym,
+        solving_for=resolves,
         unit=unit,
         trace=trace,
         value_exact=value,
@@ -278,7 +353,14 @@ def _execute_simultaneous(group, computed: dict) -> list[StepTrace] | None:
     sub_eqs = [eq.subs(sub_map) for eq in sympy_eqs]
 
     try:
-        sol = solve(sub_eqs, unknowns, dict=True)
+        with _time_limit():
+            sol = solve(sub_eqs, unknowns, dict=True)
+    except _SympyTimeout:
+        from solver.solver_log import log
+        log("sympy_solve_timeout", kind="simultaneous",
+            equations=[e["equation_str"] for e in group.equations],
+            limit_s=SOLVE_TIMEOUT_S)
+        return None
     except Exception:
         return None
 
@@ -295,7 +377,8 @@ def _execute_simultaneous(group, computed: dict) -> list[StepTrace] | None:
             return None
 
         try:
-            float_val = float(sympy_N(val))
+            with _time_limit():
+                float_val = float(sympy_N(val))
         except Exception:
             float_val = 0.0
 

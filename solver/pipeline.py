@@ -92,7 +92,7 @@ def _canonicalize_symbol(sym: str, dimension: str = "") -> str:
 
 
 def _canonicalize_given_symbols(
-    given_meta: dict, target_sym: str
+    given_meta: dict, target_sym: str, canon=None
 ) -> tuple[dict, dict]:
     """
     v7.2.6: Canonicalize Stage-1 GIVEN symbols to the graph's naming.
@@ -125,12 +125,17 @@ def _canonicalize_given_symbols(
     """
     if not given_meta:
         return given_meta, {}
+    if canon is None:
+        canon = lambda s, d="", u="", nm="": _canonicalize_symbol(s, d)
 
-    # Pass 1 — compute each given's candidate canonical form.
+    # Pass 1 — compute each given's candidate canonical form (by concept: alias,
+    # then name + dimension match against the registry).
     candidate: dict[str, str] = {}
     for sym, meta in given_meta.items():
         dim = meta.get("dimension", "") if isinstance(meta, dict) else ""
-        candidate[sym] = _canonicalize_symbol(sym, dim)
+        unit = meta.get("unit", "") if isinstance(meta, dict) else ""
+        name = meta.get("name", "") if isinstance(meta, dict) else ""
+        candidate[sym] = canon(sym, dim, unit, name)
 
     # How many givens want each canonical name? (>1 ⇒ family collision.)
     from collections import Counter
@@ -235,27 +240,12 @@ class PhysicsSolver:
         target_sym  = unknown.get("symbol", "")
         target_dim  = unknown.get("dimension", "")
 
-        # v7.1.6: canonicalize the target symbol. Stage 1 may name kinetic
-        # energy 'E' or 'E_k' where the graph uses 'K'. Without this, the
-        # resolver treats them as different unknowns and builds a wrong chain.
-        canon_sym = _canonicalize_symbol(target_sym, target_dim)
-        if canon_sym != target_sym:
-            from solver.solver_log import log
-            log("target_symbol_canonicalized",
-                original=target_sym, canonical=canon_sym, dimension=target_dim)
-            target_sym = canon_sym
-            unknown = dict(unknown)
-            unknown["symbol"] = canon_sym
-
-        # v7.2.6: canonicalize GIVEN symbols too (collision-guarded). Without
-        # this, a given named `l`/`mu_k`/`lambda` etc. by Stage 1 does not match
-        # the graph's `L`/`mu`/`lambda_`, so the resolver treats the quantity as
-        # an unsolved unknown and the chain dead-ends. See the audit: this was
-        # the single dominant failure mode.
-        given_meta, _given_applied = _canonicalize_given_symbols(given_meta, target_sym)
-        if _given_applied:
-            from solver.solver_log import log
-            log("given_symbols_canonicalized", mapping=_given_applied)
+        # v8: NO symbol canonicalization or matching in code. Stage 1's symbols
+        # are kept exactly as the model wrote them; the Stage-2 LLM is what maps
+        # the chosen equation's variables onto these quantities, by meaning (see
+        # frontier_resolver's use of the LLM `solves_for`/`known`/`needed`
+        # binding). The graph's variable names and the question's names never
+        # need to agree — that is the whole point of having the LLM traverse.
 
         search_query = parsed.get("search_query", "")  # v7: for Chroma landing
         # Hint only — candidates_for_quantity() falls back to the full set
@@ -314,12 +304,22 @@ class PhysicsSolver:
         # self-flagged a conditions_concern. An LLM can be confidently wrong
         # with no flag raised at all; that failure mode needs to retry too.
         confidence       = "HIGH"
-        excluded_eqs: set = set()
+        # Two exclusion scopes so a deep dead-end can't cascade into banning the
+        # correct landing (the bug that turned one mis-bound sub-goal into
+        # "rejected all candidates"):
+        #   dropped_landings — Round-0 nodes whose WHOLE chain couldn't close;
+        #                      persist, so re-landing moves to the next top-5 node.
+        #   deep_excluded    — deeper (round>0) culprit equations; scoped to the
+        #                      CURRENT landing and cleared when we drop the node,
+        #                      so a banned deep eq never starves a different node.
+        dropped_landings: set = set()
+        deep_excluded:    set = set()
         full_decision_log: list[dict] = []
         resolution  = None
         exec_trace  = None
 
         for attempt in range(1, MAX_BACKTRACK_ATTEMPTS + 1):
+            excluded_eqs = dropped_landings | deep_excluded
             log("solve_attempt", attempt=attempt,
                 target=target_sym, n_excluded=len(excluded_eqs))
             resolution = resolve_frontier(
@@ -337,28 +337,40 @@ class PhysicsSolver:
                 full_decision_log.append({**entry, "attempt": attempt})
 
             if not resolution.success:
-                # Stage 2 couldn't complete a chain. v7.2.2: if the dead-end
-                # had a Round-0 root equation, this is the "drop this node, try
-                # the next top-5 node" case — exclude that root and retry, so
-                # Round 0 re-runs with it banned and the LLM picks the next-best
-                # node from retrieval. Only give up when there's no root to
-                # exclude (the main unknown itself had no fit), or excluding it
-                # wouldn't change anything (already excluded).
-                root = resolution.dead_end_root_eq
-                if root and root not in excluded_eqs:
-                    log("stage2_node_rollback",
-                        excluded_root=root, attempt=attempt,
-                        reason="chain dead-ended; dropping this Round-0 node "
-                               "and retrying with the next top-5 node")
-                    excluded_eqs.add(root)
+                # Stage 2 couldn't complete a chain. First try to re-pick the
+                # DEEPER equation that failed (keeping the correct landing); only
+                # when no deeper alternative is left do we drop the whole node and
+                # move to the next top-5 landing — with a CLEAN deep slate.
+                deep = resolution.dead_end_root_eq        # round>0 culprit, or ""
+                if deep and deep not in deep_excluded:
+                    log("stage2_node_rollback", kind="deep_reselect",
+                        excluded_eq=deep, attempt=attempt,
+                        reason="sub-goal dead-ended; banning this deeper equation "
+                               "and re-picking an alternative for the same sub-goal")
+                    deep_excluded.add(deep)
                     continue
-                # No root to exclude, or already tried — genuinely stuck.
+                landing = resolution.landing_eq_id
+                if landing and landing not in dropped_landings:
+                    log("stage2_node_rollback", kind="drop_node",
+                        excluded_root=landing, attempt=attempt,
+                        reason="deep alternatives exhausted; dropping this Round-0 "
+                               "node and retrying the next top-5 node (clean slate)")
+                    dropped_landings.add(landing)
+                    deep_excluded.clear()    # fresh slate for the new landing
+                    continue
+                # No deeper culprit and no landing left to drop — genuinely stuck.
                 break
 
+            # v8: execute under the symbol the resolver actually solved for.
+            # Concept-binding may have rebound the target (e.g. 'T' → 'T_p') to
+            # the landing equation's variable for the same quantity, so the plan
+            # produces `resolution.final_symbol`, which can differ from the
+            # Stage-1 target string. Fall back to target_sym for older paths.
+            solve_symbol = getattr(resolution, "final_symbol", "") or target_sym
             exec_trace = execute_plan(
                 plan          = resolution.plan,
                 given_values  = given_values,
-                target_symbol = target_sym,
+                target_symbol = solve_symbol,
                 target_unit   = unknown.get("unit", ""),
                 target_dim    = unknown.get("dimension", ""),
             )
@@ -376,11 +388,13 @@ class PhysicsSolver:
                 if hasattr(s, "is_provisional") and s.is_provisional
             }
             newly_excluded = set(exec_trace.failed_eq_ids) | provisional_ids
-            if not newly_excluded or newly_excluded <= excluded_eqs:
+            if not newly_excluded or newly_excluded <= (dropped_landings | deep_excluded):
                 # Nothing new to exclude — retrying would just repeat the
                 # same failure, so stop instead of looping pointlessly.
                 break
-            excluded_eqs |= newly_excluded
+            # A SymPy failure bans the offending equation(s) as deep culprits,
+            # so the retry re-picks alternatives while keeping the landing.
+            deep_excluded |= newly_excluded
 
         if resolution is None or not resolution.success:
             return self._error(

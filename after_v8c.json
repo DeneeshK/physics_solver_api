@@ -1,7 +1,7 @@
 {
   "summary": {
     "total": 78,
-    "passed": 17
+    "passed": 31
   },
   "records": [
     {
@@ -12,14 +12,17 @@
       "question": "A 100 microF capacitor is connected to an AC source of frequency 50 Hz. Find its capacitive reactance.",
       "expected_answer": 31.83,
       "expected_unit": "ohm",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 31.83 by 100.0% (tol 2.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'X_C' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 31.830988618379067 within 2.0% of 31.83",
+      "got_value": 31.830988618379067,
+      "got_unit": "ohm",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "omega = 2*pi*f \u2192 omega",
+        "X_C = 1/(omega*C) \u2192 X_C"
+      ],
+      "got_error": ""
     },
     {
       "id": "AC_circuits_multi_step_chain_01",
@@ -31,12 +34,14 @@
       "expected_unit": "A",
       "passed": false,
       "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 4.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'Irms' \u2014 no equation's concept matched the question."
+      "detail": "answer 6.666666666666667 differs from 4.0 by 66.7% (tol 1.0%)",
+      "got_value": 6.666666666666667,
+      "got_unit": "A",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "V = I*R \u2192 I"
+      ],
+      "got_error": ""
     },
     {
       "id": "SHM_single_step_01",
@@ -48,12 +53,12 @@
       "expected_unit": "s",
       "passed": true,
       "failure_stage": null,
-      "detail": "answer 0.314159265358979 within 2.0% of 0.3141592653589793",
-      "got_value": 0.314159265358979,
+      "detail": "answer 0.3141592653589793 within 2.0% of 0.3141592653589793",
+      "got_value": 0.3141592653589793,
       "got_unit": "s",
       "got_confidence": "HIGH",
       "got_chain": [
-        "T = 2*pi*sqrt(m/k) \u2192 T"
+        "T_p = 2*pi*sqrt(m/k_spring) \u2192 T_p"
       ],
       "got_error": ""
     },
@@ -65,14 +70,16 @@
       "question": "A simple pendulum of length 1.0 m oscillates with small amplitude near the surface of the Earth. Find its period of oscillation. Take g = 9.8 m/s^2.",
       "expected_answer": 2.007,
       "expected_unit": "s",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 2.007 by 100.0% (tol 2.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'T' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 2.0070899231544934 within 2.0% of 2.007",
+      "got_value": 2.0070899231544934,
+      "got_unit": "s",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "T_p = 2*pi*sqrt(L/g) \u2192 T_p"
+      ],
+      "got_error": ""
     },
     {
       "id": "SHM_implicit_given_01",
@@ -89,7 +96,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'v_max' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'v' \u2014 no equation's concept matched the question."
     },
     {
       "id": "capacitors_single_step_01",
@@ -99,14 +106,16 @@
       "question": "A 10 microF capacitor is connected across a 12 V battery. Find the charge stored on the capacitor.",
       "expected_answer": 0.00012,
       "expected_unit": "C",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 0.00012 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'Q' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 0.00012 within 1.0% of 0.00012",
+      "got_value": 0.00012,
+      "got_unit": "C",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "q = C*V \u2192 q"
+      ],
+      "got_error": ""
     },
     {
       "id": "capacitors_multi_step_chain_01",
@@ -117,13 +126,15 @@
       "expected_answer": 7.0832e-08,
       "expected_unit": "C",
       "passed": false,
-      "failure_stage": "unknown",
-      "detail": "solver raised: 'Q'",
-      "got_value": null,
-      "got_unit": null,
-      "got_confidence": null,
-      "got_chain": null,
-      "got_error": "'Q'"
+      "failure_stage": "answer_mismatch",
+      "detail": "answer 1.7708e-08 differs from 7.0832e-08 by 75.0% (tol 2.0%)",
+      "got_value": 1.7708e-08,
+      "got_unit": "C",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "simultaneous(C = epsilon_0*A/d, q = C*V) \u2192 ['q', 'C']"
+      ],
+      "got_error": ""
     },
     {
       "id": "capacitors_implicit_given_01",
@@ -134,13 +145,15 @@
       "expected_answer": 2.4,
       "expected_unit": "microF",
       "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 2.4 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'C_eq' \u2014 no equation's concept matched the question."
+      "failure_stage": "answer_mismatch",
+      "detail": "answer 2.4e-06 differs from 2.4 by 100.0% (tol 1.0%)",
+      "got_value": 2.4e-06,
+      "got_unit": "F",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "C = C1*C2/(C1 + C2) \u2192 C"
+      ],
+      "got_error": ""
     },
     {
       "id": "circular_motion_single_step_01",
@@ -150,14 +163,16 @@
       "question": "A particle moves in a circle of radius 5 m with a constant speed of 10 m/s. Find the magnitude of its centripetal acceleration.",
       "expected_answer": 20.0,
       "expected_unit": "m/s^2",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 20.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'a_c' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 20.0 within 1.0% of 20.0",
+      "got_value": 20.0,
+      "got_unit": "m/s^2",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "a = v**2/r \u2192 a"
+      ],
+      "got_error": ""
     },
     {
       "id": "circular_motion_multi_step_chain_01",
@@ -167,14 +182,16 @@
       "question": "A car of mass 1000 kg travels around a circular track of radius 50 m at a constant speed of 20 m/s. Find the magnitude of the centripetal force acting on the car.",
       "expected_answer": 8000.0,
       "expected_unit": "N",
-      "passed": false,
-      "failure_stage": "unknown",
-      "detail": "solver raised: 'F_c'",
-      "got_value": null,
-      "got_unit": null,
-      "got_confidence": null,
-      "got_chain": null,
-      "got_error": "'F_c'"
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 8000.0 within 1.0% of 8000.0",
+      "got_value": 8000.0,
+      "got_unit": "N",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "F_c = m*v**2/r \u2192 F_c"
+      ],
+      "got_error": ""
     },
     {
       "id": "circular_motion_implicit_given_01",
@@ -184,14 +201,18 @@
       "question": "A particle moves in a circle of radius 2 m at constant speed, completing 5 revolutions per second. Find its centripetal acceleration.",
       "expected_answer": 1973.92,
       "expected_unit": "m/s^2",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "solver raised: 'a_c'",
-      "got_value": null,
-      "got_unit": null,
-      "got_confidence": null,
-      "got_chain": null,
-      "got_error": "'a_c'"
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 1973.9208802178716 within 2.0% of 1973.92",
+      "got_value": 1973.9208802178716,
+      "got_unit": "m/s^2",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "omega = 2*pi*f \u2192 omega",
+        "v = omega*r \u2192 v",
+        "a = v**2/r \u2192 a"
+      ],
+      "got_error": ""
     },
     {
       "id": "current_electricity_single_step_01",
@@ -201,14 +222,16 @@
       "question": "A current of 2 A flows through a resistor of resistance 5 ohm. Find the voltage across the resistor.",
       "expected_answer": 10.0,
       "expected_unit": "V",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 10.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'V' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 10.0 within 1.0% of 10.0",
+      "got_value": 10.0,
+      "got_unit": "V",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "V = I*R \u2192 V"
+      ],
+      "got_error": ""
     },
     {
       "id": "current_electricity_multi_step_chain_01",
@@ -218,17 +241,14 @@
       "question": "A cylindrical copper wire of length 2 m and cross-sectional area 1e-6 m^2 has resistivity 1.7e-8 ohm*m. A potential difference of 6 V is applied across its ends. Find the current flowing through the wire.",
       "expected_answer": 176.47,
       "expected_unit": "A",
-      "passed": true,
-      "failure_stage": null,
-      "detail": "answer 176.47058823529412 within 2.0% of 176.47",
-      "got_value": 176.47058823529412,
-      "got_unit": "N s",
-      "got_confidence": "HIGH",
-      "got_chain": [
-        "R_e = rho*L/A \u2192 R_e",
-        "V = I*R_e \u2192 I"
-      ],
-      "got_error": ""
+      "passed": false,
+      "failure_stage": "stage2_selection",
+      "detail": "answer 0.0 differs from 176.47 by 100.0% (tol 2.0%)",
+      "got_value": 0.0,
+      "got_unit": "",
+      "got_confidence": "UNVERIFIED",
+      "got_chain": [],
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'I' \u2014 no equation's concept matched the question."
     },
     {
       "id": "current_electricity_implicit_given_01",
@@ -245,7 +265,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'Req' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 10 retrieved candidate(s) for 'R' \u2014 no equation's concept matched the question."
     },
     {
       "id": "current_electricity_symbol_mismatch_or_trap_01",
@@ -255,14 +275,16 @@
       "question": "A current of 3 A flows through a 4 ohm resistor. Find the power dissipated in the resistor.",
       "expected_answer": 36.0,
       "expected_unit": "W",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 36.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'P' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 36.0 within 1.0% of 36.0",
+      "got_value": 36.0,
+      "got_unit": "W",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "P_pow = I**2*R \u2192 P_pow"
+      ],
+      "got_error": ""
     },
     {
       "id": "elasticity_single_step_01",
@@ -272,14 +294,16 @@
       "question": "A force of 1000 N is applied perpendicularly to the end of a rod of cross-sectional area 1e-4 m^2. Find the resulting tensile stress in the rod.",
       "expected_answer": 10000000.0,
       "expected_unit": "Pa",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 10000000.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for '\u03c3' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 10000000.0 within 1.0% of 10000000.0",
+      "got_value": 10000000.0,
+      "got_unit": "Pa",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "stress = F/A \u2192 stress"
+      ],
+      "got_error": ""
     },
     {
       "id": "elasticity_multi_step_chain_01",
@@ -296,7 +320,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'x' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'x' \u2014 no equation's concept matched the question."
     },
     {
       "id": "electromagnetic_induction_single_step_01",
@@ -313,7 +337,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'e' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'emf' \u2014 no equation's concept matched the question."
     },
     {
       "id": "electromagnetic_induction_multi_step_chain_01",
@@ -330,7 +354,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 2 retrieved candidate(s) for '\u03b5' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: LLM rejected all 1 candidate(s) for 'A' in round 2 (llm_decision_none)."
     },
     {
       "id": "electrostatics_single_step_01",
@@ -341,15 +365,13 @@
       "expected_answer": 0.9,
       "expected_unit": "N",
       "passed": false,
-      "failure_stage": "answer_mismatch",
-      "detail": "answer 898774243798.8225 differs from 0.9 by 99863804866435.8% (tol 1.0%)",
-      "got_value": 898774243798.8225,
-      "got_unit": "N",
-      "got_confidence": "HIGH",
-      "got_chain": [
-        "F = q1*q2/(4*pi*epsilon_0*r**2) \u2192 F"
-      ],
-      "got_error": ""
+      "failure_stage": "stage2_selection",
+      "detail": "answer 0.0 differs from 0.9 by 100.0% (tol 1.0%)",
+      "got_value": 0.0,
+      "got_unit": "",
+      "got_confidence": "UNVERIFIED",
+      "got_chain": [],
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
     },
     {
       "id": "electrostatics_implicit_given_01",
@@ -361,14 +383,12 @@
       "expected_unit": "C",
       "passed": false,
       "failure_stage": "stage2_selection",
-      "detail": "answer -3.1644332964621394e-05 differs from 3.162e-05 by 200.1% (tol 2.0%)",
-      "got_value": -3.1644332964621394e-05,
-      "got_unit": "C",
-      "got_confidence": "HIGH",
-      "got_chain": [
-        "simultaneous(E = q/(4*pi*epsilon_0*r**2), E = F/q) \u2192 ['q', 'E']"
-      ],
-      "got_error": ""
+      "detail": "answer 0.0 differs from 3.162e-05 by 100.0% (tol 2.0%)",
+      "got_value": 0.0,
+      "got_unit": "",
+      "got_confidence": "UNVERIFIED",
+      "got_chain": [],
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'q' \u2014 no equation's concept matched the question."
     },
     {
       "id": "electrostatics_underspecified_01",
@@ -385,7 +405,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'E' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'E_field' \u2014 no equation's concept matched the question."
     },
     {
       "id": "fluid_mechanics_single_step_01",
@@ -399,7 +419,7 @@
       "failure_stage": null,
       "detail": "answer 98000.0 within 1.0% of 98000.0",
       "got_value": 98000.0,
-      "got_unit": "W",
+      "got_unit": "Pa",
       "got_confidence": "HIGH",
       "got_chain": [
         "P = rho*g*h \u2192 P"
@@ -414,14 +434,16 @@
       "question": "A solid object of volume 0.001 m^3 is completely submerged in water. Find the buoyant force acting on it. Take density of water = 1000 kg/m^3 and g = 9.8 m/s^2.",
       "expected_answer": 9.8,
       "expected_unit": "N",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 9.8 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 2 candidate(s) for 'h' in round 1 (llm_decision_none)."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 9.8 within 1.0% of 9.8",
+      "got_value": 9.8,
+      "got_unit": "N",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "F = rho*Vol*g \u2192 F"
+      ],
+      "got_error": ""
     },
     {
       "id": "fluid_mechanics_implicit_given_01",
@@ -438,7 +460,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'F' in round 1 (llm_invalid_id: got 'rho_block__floats_in_water', not in candidates ['electrostatics_coulomb_law', 'gravitation_universal_law', 'surface_tension_surface_force', 'elasticity_stress', 'work_energy_power_work_constant_force', 'work_energy_power_power_instantaneous', 'laws_of_motion_impulse', 'friction_pulling_force_horizontal'])."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'rho' \u2014 no equation's concept matched the question."
     },
     {
       "id": "friction_single_step_01",
@@ -455,7 +477,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'F_k' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'F_k' \u2014 no equation's concept matched the question."
     },
     {
       "id": "friction_implicit_given_01",
@@ -465,14 +487,16 @@
       "question": "A block placed on an inclined plane just begins to slide when the inclination angle is 30 degrees. Find the coefficient of static friction between the block and the plane.",
       "expected_answer": 0.5774,
       "expected_unit": "dimensionless",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 0.5774 by 100.0% (tol 2.0%)",
-      "got_value": 0.0,
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 0.577350269189626 within 2.0% of 0.5774",
+      "got_value": 0.577350269189626,
       "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'T' in round 4 (llm_decision_none)."
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "mu = tan(theta) \u2192 mu"
+      ],
+      "got_error": ""
     },
     {
       "id": "friction_multi_step_chain_01",
@@ -484,12 +508,11 @@
       "expected_unit": "m/s^2",
       "passed": false,
       "failure_stage": "stage2_selection",
-      "detail": "answer 9.8 differs from 4.04 by 142.6% (tol 2.0%)",
-      "got_value": 9.8,
+      "detail": "answer 6.0 differs from 4.04 by 48.5% (tol 2.0%)",
+      "got_value": 6.0,
       "got_unit": "m/s^2",
       "got_confidence": "HIGH",
       "got_chain": [
-        "F = m*g \u2192 F",
         "F = m*a \u2192 a"
       ],
       "got_error": ""
@@ -509,7 +532,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
     },
     {
       "id": "gravitation_multi_step_chain_01",
@@ -520,13 +543,13 @@
       "expected_answer": 7726.0,
       "expected_unit": "m/s",
       "passed": false,
-      "failure_stage": "stage2_selection",
+      "failure_stage": "answer_mismatch",
       "detail": "answer 0.0 differs from 7726.0 by 100.0% (tol 2.0%)",
       "got_value": 0.0,
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 3 retrieved candidate(s) for 'v_orbital' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 1 parse failed: 'list' object has no attribute 'get'"
     },
     {
       "id": "gravitation_implicit_given_01",
@@ -543,7 +566,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 3 retrieved candidate(s) for 'W'' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'r' in round 1 (llm_decision_none)."
     },
     {
       "id": "kinematics_single_step_01",
@@ -579,7 +602,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 2 candidate(s) for 'N' in round 3 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 't' \u2014 no equation's concept matched the question."
     },
     {
       "id": "kinematics_implicit_given_01",
@@ -589,14 +612,15 @@
       "question": "A car starts from rest and accelerates uniformly at 2 m/s^2 for 8 seconds. Find its final velocity.",
       "expected_answer": 16.0,
       "expected_unit": "m/s",
-      "passed": true,
-      "failure_stage": null,
-      "detail": "answer 16.0 within 1.0% of 16.0",
-      "got_value": 16.0,
+      "passed": false,
+      "failure_stage": "answer_mismatch",
+      "detail": "answer -16.0 differs from 16.0 by 200.0% (tol 1.0%)",
+      "got_value": -16.0,
       "got_unit": "m/s",
       "got_confidence": "HIGH",
       "got_chain": [
-        "v = u + a*t \u2192 v"
+        "s = u*t + (1/2)*a*t**2 \u2192 s",
+        "v**2 = u**2 + 2*a*s \u2192 v"
       ],
       "got_error": ""
     },
@@ -615,7 +639,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'v' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'v' \u2014 no equation's concept matched the question."
     },
     {
       "id": "kinematics_underspecified_01",
@@ -632,7 +656,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 2 retrieved candidate(s) for 'v' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: No candidate equations found for 'a' (acceleration) in round 1."
     },
     {
       "id": "kinematics_underspecified_02",
@@ -649,7 +673,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 2 retrieved candidate(s) for 's' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 's' \u2014 no equation's concept matched the question."
     },
     {
       "id": "laws_of_motion_single_step_01",
@@ -685,7 +709,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
     },
     {
       "id": "laws_of_motion_implicit_given_01",
@@ -721,7 +745,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 2 candidate(s) for 'N' in round 2 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'T' \u2014 no equation's concept matched the question."
     },
     {
       "id": "magnetism_single_step_01",
@@ -738,7 +762,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'F' \u2014 no equation's concept matched the question."
     },
     {
       "id": "magnetism_multi_step_chain_01",
@@ -769,10 +793,12 @@
       "failure_stage": null,
       "detail": "answer 0.0 within 2.0% of 3.976e-19",
       "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'K' \u2014 no equation's concept matched the question."
+      "got_unit": "J",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "E_ph = h_planck*f \u2192 E_ph"
+      ],
+      "got_error": ""
     },
     {
       "id": "modern_physics_multi_step_chain_01",
@@ -789,7 +815,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'K_max' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'Kmax' \u2014 no equation's concept matched the question."
     },
     {
       "id": "modern_physics_implicit_given_01",
@@ -806,7 +832,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'lambda' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: LLM rejected all 1 candidate(s) for 'k_e' in round 3 (llm_decision_none)."
     },
     {
       "id": "momentum_collisions_single_step_01",
@@ -820,7 +846,7 @@
       "failure_stage": null,
       "detail": "answer 10.0 within 1.0% of 10.0",
       "got_value": 10.0,
-      "got_unit": "kg m/s",
+      "got_unit": "kg*m/s",
       "got_confidence": "HIGH",
       "got_chain": [
         "p = m*v \u2192 p"
@@ -842,7 +868,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 7 candidate(s) for 'W' in round 2 (llm_decision_none)."
+      "got_error": "Stage 2 failed: LLM rejected all 3 candidate(s) for 'a' in round 2 (llm_decision_none)."
     },
     {
       "id": "momentum_collisions_implicit_given_01",
@@ -853,13 +879,15 @@
       "expected_answer": 2.0,
       "expected_unit": "N*s",
       "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 2.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Could not resolve quantities: ['t (time)']"
+      "failure_stage": "answer_mismatch",
+      "detail": "answer 1.0 differs from 2.0 by 50.0% (tol 1.0%)",
+      "got_value": 1.0,
+      "got_unit": "kg*m/s",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "p = m*v \u2192 p"
+      ],
+      "got_error": ""
     },
     {
       "id": "momentum_collisions_symbol_mismatch_or_trap_01",
@@ -876,7 +904,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'u' in round 2 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'v1_final' \u2014 no equation's concept matched the question."
     },
     {
       "id": "nuclear_physics_single_step_01",
@@ -893,7 +921,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'm_final' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'm_final' \u2014 no equation's concept matched the question."
     },
     {
       "id": "nuclear_physics_multi_step_chain_01",
@@ -910,7 +938,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for '\u03bb' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'lambda_d' \u2014 no equation's concept matched the question."
     },
     {
       "id": "nuclear_physics_implicit_given_01",
@@ -927,7 +955,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'A_final' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'A_final' \u2014 no equation's concept matched the question."
     },
     {
       "id": "nuclear_physics_underspecified_01",
@@ -944,7 +972,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'A' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'A' \u2014 no equation's concept matched the question."
     },
     {
       "id": "ray_optics_single_step_01",
@@ -961,7 +989,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 's'' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 's'' \u2014 no equation's concept matched the question."
     },
     {
       "id": "ray_optics_multi_step_chain_01",
@@ -978,7 +1006,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'f' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'f' \u2014 no equation's concept matched the question."
     },
     {
       "id": "rotational_motion_single_step_01",
@@ -988,14 +1016,16 @@
       "question": "A uniform solid disc of mass 2 kg and radius 0.5 m rotates about a fixed axis perpendicular to its plane through its center. Find its moment of inertia about this axis.",
       "expected_answer": 0.25,
       "expected_unit": "kg*m^2",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 0.25 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'I' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 0.25 within 1.0% of 0.25",
+      "got_value": 0.25,
+      "got_unit": "kg*m^2",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "I_mom = (1/2)*m*r**2 \u2192 I_mom"
+      ],
+      "got_error": ""
     },
     {
       "id": "rotational_motion_multi_step_chain_01",
@@ -1029,7 +1059,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'I' in round 3 (llm_omitted_item)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'omega' \u2014 no equation's concept matched the question."
     },
     {
       "id": "sound_single_step_01",
@@ -1046,7 +1076,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'f_observed' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'f_obs' \u2014 no equation's concept matched the question."
     },
     {
       "id": "sound_implicit_given_01",
@@ -1057,13 +1087,15 @@
       "expected_answer": 4.0,
       "expected_unit": "Hz",
       "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 4.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for 'bf' \u2014 no equation's concept matched the question."
+      "failure_stage": "answer_mismatch",
+      "detail": "answer -4.0 differs from 4.0 by 200.0% (tol 1.0%)",
+      "got_value": -4.0,
+      "got_unit": "Hz",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "f_beat = f1 - f2 \u2192 f_beat"
+      ],
+      "got_error": ""
     },
     {
       "id": "surface_tension_single_step_01",
@@ -1074,13 +1106,13 @@
       "expected_answer": 0.0294,
       "expected_unit": "m",
       "passed": false,
-      "failure_stage": "stage2_selection",
+      "failure_stage": "answer_mismatch",
       "detail": "answer 0.0 differs from 0.0294 by 100.0% (tol 2.0%)",
       "got_value": 0.0,
       "got_unit": "m",
       "got_confidence": "HIGH",
       "got_chain": [
-        "simultaneous(h = 2*sigma*cos(theta)/(rho*g*r), P = 2*sigma/r, P = 4*sigma/r) \u2192 ['h', 'sigma', 'P']"
+        "simultaneous(h = 2*sigma_st*cos(theta)/(rho*g*r), P = 4*sigma_st/r, P = 2*sigma_st/r) \u2192 ['h', 'sigma_st', 'P']"
       ],
       "got_error": ""
     },
@@ -1093,13 +1125,15 @@
       "expected_answer": 144.0,
       "expected_unit": "Pa",
       "passed": false,
-      "failure_stage": "stage2_selection",
+      "failure_stage": "answer_mismatch",
       "detail": "answer 0.0 differs from 144.0 by 100.0% (tol 1.0%)",
       "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'P_excess' \u2014 no equation's concept matched the question."
+      "got_unit": "Pa",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "simultaneous(P = 2*sigma_st/r, P = 4*sigma_st/r) \u2192 ['P', 'sigma_st']"
+      ],
+      "got_error": ""
     },
     {
       "id": "thermal_physics_single_step_01",
@@ -1116,7 +1150,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 6 retrieved candidate(s) for 'Q' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'Q' \u2014 no equation's concept matched the question."
     },
     {
       "id": "thermal_physics_multi_step_chain_01",
@@ -1133,7 +1167,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'Q_dot' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'Q_dot' \u2014 no equation's concept matched the question."
     },
     {
       "id": "thermodynamics_single_step_01",
@@ -1143,14 +1177,16 @@
       "question": "A Carnot engine operates between a hot reservoir at 400 K and a cold reservoir at 300 K. Find its efficiency.",
       "expected_answer": 0.25,
       "expected_unit": "dimensionless",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 0.25 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'eta' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 0.25 within 1.0% of 0.25",
+      "got_value": 0.25,
+      "got_unit": "-",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "eff = 1 - T_cold/T_hot \u2192 eff"
+      ],
+      "got_error": ""
     },
     {
       "id": "thermodynamics_multi_step_chain_01",
@@ -1167,7 +1203,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 3 candidate(s) for 'eta' in round 3 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'W' \u2014 no equation's concept matched the question."
     },
     {
       "id": "thermodynamics_implicit_given_01",
@@ -1184,7 +1220,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 7 retrieved candidate(s) for '\u0394U' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'DeltaU' \u2014 no equation's concept matched the question."
     },
     {
       "id": "wave_optics_single_step_01",
@@ -1201,7 +1237,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 5 retrieved candidate(s) for 'beta' \u2014 no equation's concept matched the question."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'beta_fr' \u2014 no equation's concept matched the question."
     },
     {
       "id": "wave_optics_multi_step_chain_01",
@@ -1218,7 +1254,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 2 candidate(s) for 'DeltaL' in round 1 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 9 retrieved candidate(s) for 'y_3' \u2014 no equation's concept matched the question."
     },
     {
       "id": "waves_single_step_01",
@@ -1228,14 +1264,16 @@
       "question": "A transverse wave on a string has frequency 440 Hz and wavelength 0.75 m. Find its speed of propagation.",
       "expected_answer": 330.0,
       "expected_unit": "m/s",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 330.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: Landing scan rejected all 4 retrieved candidate(s) for 'v' \u2014 no equation's concept matched the question."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 330.0 within 1.0% of 330.0",
+      "got_value": 330.0,
+      "got_unit": "m/s",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "v_wave = f*lambda_ \u2192 v_wave"
+      ],
+      "got_error": ""
     },
     {
       "id": "waves_multi_step_chain_01",
@@ -1246,15 +1284,13 @@
       "expected_answer": 50.0,
       "expected_unit": "Hz",
       "passed": false,
-      "failure_stage": "answer_mismatch",
+      "failure_stage": "stage2_selection",
       "detail": "answer 0.0 differs from 50.0 by 100.0% (tol 1.0%)",
       "got_value": 0.0,
-      "got_unit": "Hz",
-      "got_confidence": "HIGH",
-      "got_chain": [
-        "simultaneous(v = sqrt(T/mu), f = n*v/(2*L), f = n*v/(4*L)) \u2192 ['f', 'v', 'n']"
-      ],
-      "got_error": ""
+      "got_unit": "",
+      "got_confidence": "UNVERIFIED",
+      "got_chain": [],
+      "got_error": "Stage 2 failed: LLM rejected all 3 candidate(s) for 'I_mom' in round 2 (llm_decision_none)."
     },
     {
       "id": "work_energy_power_single_step_01",
@@ -1264,10 +1300,10 @@
       "question": "A force of 50 N is applied to an object at an angle of 60 degrees above the horizontal, and the object is displaced 10 m horizontally. Find the work done by the force.",
       "expected_answer": 250.0,
       "expected_unit": "J",
-      "passed": false,
-      "failure_stage": "answer_mismatch",
-      "detail": "answer -476.20649020757816 differs from 250.0 by 290.5% (tol 1.0%)",
-      "got_value": -476.20649020757816,
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 249.99999999999903 within 1.0% of 250.0",
+      "got_value": 249.99999999999903,
       "got_unit": "J",
       "got_confidence": "HIGH",
       "got_chain": [
@@ -1283,14 +1319,16 @@
       "question": "A 0.5 kg ball is dropped from a height of 20 m above the ground. Find the kinetic energy of the ball just before it strikes the ground. Take g = 9.8 m/s^2 and ignore air resistance.",
       "expected_answer": 98.0,
       "expected_unit": "J",
-      "passed": false,
-      "failure_stage": "stage2_selection",
-      "detail": "answer 0.0 differs from 98.0 by 100.0% (tol 1.0%)",
-      "got_value": 0.0,
-      "got_unit": "",
-      "got_confidence": "UNVERIFIED",
-      "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'M' in round 2 (llm_decision_none)."
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 98.0 within 1.0% of 98.0",
+      "got_value": 98.0,
+      "got_unit": "J",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "U = m*g*h \u2192 U"
+      ],
+      "got_error": ""
     },
     {
       "id": "work_energy_power_multi_step_chain_02",
@@ -1307,7 +1345,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'P' in round 3 (llm_decision_none)."
+      "got_error": "Stage 2 failed: Landing scan rejected all 8 retrieved candidate(s) for 'K' \u2014 no equation's concept matched the question."
     },
     {
       "id": "work_energy_power_implicit_given_01",
@@ -1324,7 +1362,7 @@
       "got_unit": "J",
       "got_confidence": "HIGH",
       "got_chain": [
-        "K = 0.5*m*v**2 \u2192 K"
+        "K = (1/2)*m*v**2 \u2192 K"
       ],
       "got_error": ""
     },
@@ -1360,7 +1398,7 @@
       "got_unit": "",
       "got_confidence": "UNVERIFIED",
       "got_chain": [],
-      "got_error": "Stage 2 failed: LLM rejected all 8 candidate(s) for 'v' in round 2 (llm_decision_none)."
+      "got_error": "Stage 2 failed: LLM rejected all 4 candidate(s) for 'P_pow' in round 1 (llm_decision_none)."
     }
   ]
 }

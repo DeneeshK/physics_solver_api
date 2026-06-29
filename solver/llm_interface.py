@@ -145,6 +145,23 @@ def _sanitize_json_escapes(s: str) -> str:
     return invalid_escape.sub(r'\\\\', s)
 
 
+def _eval_numeric_exprs(s: str) -> str:
+    """Replace JSON values that are pure numeric arithmetic expressions with
+    their computed result, so '"value": 6371000 + 300000' becomes a valid
+    number. Only digits, '.', and + - * / ( ) are evaluated — never names — so
+    this can't execute arbitrary code."""
+    def repl(m):
+        expr = m.group(2)
+        if re.fullmatch(r"[\d\.\s+\-*/()]+", expr):
+            try:
+                return m.group(1) + repr(eval(expr, {"__builtins__": {}}))
+            except Exception:
+                return m.group(0)
+        return m.group(0)
+    # ": <number> <op> <number> ..." up to the next comma or closing brace
+    return re.sub(r"(:\s*)([\d.]+(?:\s*[-+*/]\s*[\d.()]+)+)", repl, s)
+
+
 def _extract_json(text: str) -> dict | list:
     """Strip markdown fences, find the first complete JSON object/array.
 
@@ -155,11 +172,20 @@ def _extract_json(text: str) -> dict | list:
     clean = re.sub(r"```(?:json)?|```", "", text).strip()
 
     def _loads(candidate: str):
-        # Try as-is; on invalid-escape, retry with sanitized backslashes.
+        # Try as-is; on invalid-escape, retry with sanitized backslashes; then
+        # retry with numeric arithmetic expressions evaluated. The 7B sometimes
+        # writes a value as an expression (e.g. "value": 6371000 + 300000),
+        # which is invalid JSON — without this the object fails to parse and the
+        # extractor falls through to an inner array, crashing the caller with
+        # "'list' object has no attribute 'get'".
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
+            pass
+        try:
             return json.loads(_sanitize_json_escapes(candidate))
+        except json.JSONDecodeError:
+            return json.loads(_eval_numeric_exprs(_sanitize_json_escapes(candidate)))
 
     # Sometimes the model adds prose before/after the JSON
     for start_char, end_char in [('{', '}'), ('[', ']')]:
@@ -269,6 +295,22 @@ IMPLICIT GIVENS — extract values from PHRASES, not just numbers
 - "uniform motion" / "constant velocity" → a = 0.
 - "rests on" / "at rest on a surface" (static scenario, no motion asked)
   → does not imply v=0 unless motion is involved in the question.
+
+ANGLES FROM WORDS — extract the angle a phrase implies, as a numeric value in
+degrees (the downstream code converts to radians). This is critical: an equation
+like F = q*v*B*sin(theta) or W = F*s*cos(theta) needs theta; if you don't supply
+it, the solver cannot proceed.
+- "perpendicular to" / "at right angles to" / "normal to"  → theta = 90
+- "parallel to" / "along" / "in the direction of"          → theta = 0
+- "at an angle of X degrees" / "inclined at X"             → theta = X
+- a horizontal force on a horizontal surface (work/force)  → theta = 0
+- a projectile/incline "at X with the horizontal"          → theta = X
+Always add the implied theta to "given" when the scenario clearly fixes it.
+
+EQUAL / IDENTICAL QUANTITIES — when the question says two things are equal or
+identical ("two equal charges", "two identical masses", "three equal resistors"),
+give EACH the SAME numeric value in "given" (e.g. both q1 and q2 = the stated
+charge; R1=R2=R3= the stated resistance). Do not leave the second/third one out.
 
 Always parse phrase-implied numerics into the given dict. The downstream
 solver treats missing-symbol and known-zero-value DIFFERENTLY: known-zero
@@ -490,6 +532,15 @@ def _normalize_given_to_si(given: dict) -> dict:
         if u in EXPLICIT:
             f, si = EXPLICIT[u]
             return value * f, si
+        # 1-pre) A case-sensitive SI unit SYMBOL (T=tesla, H=henry, A=ampere,
+        #     N, J, W, V, C, F, …) is ALREADY SI — never let the lowercase
+        #     fallthrough below match it to a different unit. This is the
+        #     'T'→'t' tonne collision (B=0.5 T became 500 kg → emf ×1000) and
+        #     the latent 'H'→'h' hour collision (inductance L=2 H → 7200 s).
+        #     Symbols that genuinely need scaling (g→kg, eV→J) are exact-matched
+        #     in EXPLICIT just above, so they never reach this guard.
+        if u in BASE_UNITS:
+            return value, unit
         # 1a) Spelled-out angle / unit lowercase fallthrough (the model often
         #     capitalizes inconsistently: "Degrees", "Degree").
         if u.lower() in EXPLICIT:
@@ -564,6 +615,13 @@ def parse_question(question: str, valid_domains: set[str] | None = None) -> dict
         log_error("stage1_parse_failed", exc=e, raw_preview=raw[:600])
         raise ValueError(f"Stage 1 parse failed. Raw output:\n{raw}\nError: {e}")
 
+    # _extract_json may return an inner ARRAY when the top-level object failed to
+    # parse (e.g. a stray invalid value). Everything downstream expects a dict;
+    # fail cleanly here rather than crashing later on `.get()` of a list.
+    if not isinstance(parsed, dict):
+        log_error("stage1_parse_not_dict", raw_preview=raw[:600])
+        raise ValueError(f"Stage 1 did not return a JSON object. Raw output:\n{raw}")
+
     # v7.1.9: empty-givens retry for weaker local models.
     # Small instruct models (Qwen-3B etc.) sometimes return "given": {} even
     # when the question plainly contains numeric values — they describe the
@@ -598,6 +656,25 @@ def parse_question(question: str, valid_domains: set[str] | None = None) -> dict
         except (json.JSONDecodeError, ValueError) as e:
             log_error("stage1_parse_retry_failed", exc=e, raw_preview=raw2[:600])
             # Fall through with the original parse.
+
+    # v7.2.6: shape-coerce the model's output before anything calls .get()/.items()
+    # on it. The 7B sometimes emits "unknown" as a LIST (e.g. [{...}] when it
+    # thinks there are several unknowns) instead of a dict — that crashed Stage 1
+    # with "'list' object has no attribute 'get'" at the log() call below, losing
+    # the whole question (observed on the satellite-orbit and straight-wire items).
+    # Likewise "given" must be a dict for _normalize_given_to_si's .items().
+    unk = parsed.get("unknown")
+    if isinstance(unk, list):
+        # Take the first dict entry as THE unknown (the solver resolves one
+        # target; extra list entries are downstream frontier items it will
+        # discover anyway). Fall back to {} if the list has no usable dict.
+        parsed["unknown"] = next((u for u in unk if isinstance(u, dict)), {})
+    elif not isinstance(unk, dict):
+        parsed["unknown"] = {}
+    if not isinstance(parsed.get("given"), dict):
+        # A list/None/str "given" can't be processed; drop to empty rather than
+        # crash. The empty-givens retry above already had its chance.
+        parsed["given"] = {}
 
     # v7.1.11: deterministically normalize given values to SI in code. The
     # model is unreliable about converting prefixed units (it left μC as 2
@@ -721,6 +798,43 @@ Examples:
 When in doubt, ask: "Is there a plausible physics chain from what the
 question gives to what this equation needs?" If yes, this is a valid pick.
 
+## Decision principle 2b: AVOID dead-end equations (reachability lookahead)
+
+A candidate may carry a "dead_end_inputs" list. Those are variables this
+equation needs that CANNOT be obtained from what is currently known — no chain
+of equations in this system produces them from the givens. Picking such an
+equation strands the solve on a quantity you can never get.
+
+  - If a candidate has a "dead_end_inputs" entry, PREFER a different candidate
+    whose inputs are all obtainable.
+  - Example: to find the weight at a height, an equation g = G*M/r**2 needs the
+    planet's mass M; if M is listed in dead_end_inputs (it isn't given and
+    nothing produces it), do NOT take that path — use a relation that needs only
+    obtainable quantities (e.g. the ratio of the field at two radii).
+  - Only pick a candidate with dead_end_inputs if EVERY candidate has them and
+    this is still the best conceptual fit; otherwise treat it as a wrong pick.
+
+This is a hint about solvability, not about concept. Still pick by CONCEPT first
+among the candidates that ARE solvable.
+
+## Decision principle 2c: the equation must CONTAIN the quantity asked
+
+The equation you pick to solve a quantity must actually have THAT quantity as one
+of its variables — do not pick an equation that only gives a STEPPING-STONE
+quantity and report its value as the answer.
+
+  - Asked for CHARGE Q: pick an equation that has Q in it, e.g. "q = C*V". Do NOT
+    pick the capacitance equation "C = K*epsilon_0*A/d" — that gives C
+    (capacitance, in farads), which is NOT the charge. Capacitance is a step you
+    need on the way to charge; solve it as a sub-step, then use q = C*V.
+  - Asked for EMF: pick "emf = Phi/t" or "emf = B*L*v" (they contain emf). Do NOT
+    pick "Phi = B*A*cos(theta)" — that gives magnetic flux (in webers), not emf.
+  - General rule: the variable you put in "solves_for" must be the SAME physical
+    quantity the question is asking for (charge is charge, emf is emf), measured
+    in the SAME kind of unit. If the best-matching equation gives a different
+    quantity, it is an intermediate — pick the equation that gives the ASKED
+    quantity, and let the intermediate become a needed sub-step.
+
 ## Decision principle 3: don't pick by "most variables known"
 
 An equation that happens to have many of its variables already known is NOT
@@ -807,14 +921,75 @@ Greek letters (theta, Delta, omega).
       "needed_symbol": "<symbol>",
       "decision": "pick",
       "chosen_eq_id": "<equation id from the candidates>",
-      "reason": "<one paragraph, PLAIN TEXT no LaTeX, explaining why THIS concept fits the physics scenario, AND why the equation's other variables are derivable from what's given>",
+      "solves_for": "<the ONE variable symbol IN THIS EQUATION that represents the quantity we are solving for>",
+      "known":  {"<equation variable>": "<the symbol from ALREADY KNOWN that gives its value>", ...},
+      "needed": ["<equation variable that is NOT yet known and must be solved next>", ...],
+      "reason": "<one paragraph, PLAIN TEXT no LaTeX, explaining why THIS concept fits>",
       "conditions_concern": "<condition text if a stated condition may not hold, else null>"
     }
   ]
 }
 
+CRITICAL — you are the one who maps the equation onto the problem (this is the
+whole point of using you). The equation's letters may differ from the question's
+letters; that NEVER matters. Decide by MEANING:
+
+  • "solves_for": pick the equation variable that IS the quantity being solved
+    for, even if its symbol differs (the question wants the period 'T'; if the
+    equation writes it 'T_p', answer "T_p"). Force is force whether it is F or
+    F_net; acceleration is acceleration even if the question says "retardation".
+
+    HARD GATE — the equation MUST actually contain the quantity being solved for.
+    Read the variables' meanings. If NONE of this equation's variables IS that
+    quantity, this equation does NOT solve it — answer "decision": "none". It may
+    be a stepping-stone (e.g. you are asked for CHARGE but this equation only has
+    CAPACITANCE C = K*epsilon_0*A/d, or you are asked for EMF but this only has
+    magnetic flux Phi = B*A*cos(theta)). A stepping-stone is NOT a valid pick for
+    the target — reject it, so a later step can use the equation that truly
+    contains the asked quantity (charge: q = C*V; emf: emf = Phi/t). Never put a
+    different quantity in "solves_for" just because the equation is on the same
+    topic.
+
+  • "known": for EVERY OTHER equation variable, if its quantity is already
+    available, map the equation's variable to the matching entry in ALREADY
+    KNOWN — by what they MEAN, not by matching letters. Give the SYMBOL of the
+    matching entry (the part before the parenthesis) when you can; its name is
+    also accepted. Example: the equation needs 'k_spring' (spring constant) and
+    ALREADY KNOWN has 'k' (force constant) → "known": {"k_spring": "k"}.
+    Universal constants (g, pi, c, G, epsilon_0, h, k_B …) count as known; map
+    them to themselves.
+
+    IMPORTANT — bind EVERY non-output variable. If an equation term is ZERO or
+    absent in THIS scenario (e.g. capacitive reactance X_C in an R-L circuit
+    that has no capacitor, or an angle that does not apply), bind it to the
+    number 0: "known": {"X_C": 0}. Do NOT leave such a term out — leaving it
+    unbound makes the solver chase a quantity that isn't there and the whole
+    chain fails.
+
+  • "needed": equation variables whose quantity is NOT yet available and is not
+    a constant. These will be solved next from their own equations. Example:
+    the equation needs 'm' (mass) but the question only gives density and volume
+    → "needed": ["m"]  (we will then derive mass from density and volume).
+
+Every variable in the chosen equation MUST appear exactly once across
+solves_for, known, or needed. Do not invent variables that are not in the
+equation.
+
 For deferred items: {"needed_symbol": "...", "decision": "defer", "reason": "..."}
+
+If you are asked about a variable that is ALREADY KNOWN — its value is in the
+ALREADY KNOWN list, even under a different symbol or a different name — resolve
+it directly. Do NOT say "none" and do NOT look for an equation:
+  {"needed_symbol": "...", "decision": "known", "source": "<the symbol or name from ALREADY KNOWN>", "reason": "..."}
+
+If you are asked about a variable that is ZERO or ABSENT in this scenario (e.g.
+capacitive reactance in a circuit with only an inductor, an angle that does not
+apply), resolve it as zero. Do NOT say "none":
+  {"needed_symbol": "...", "decision": "zero", "reason": "..."}
+
 For no-fit items:   {"needed_symbol": "...", "decision": "none",  "reason": "..."}
+Reserve "none" for when an equation is genuinely NEEDED for this quantity but no
+candidate's concept fits — NOT for a quantity that is already known or zero.
 """
 
 
@@ -883,6 +1058,13 @@ def _format_candidate(eq: dict, known_symbols: set[str] | None = None) -> dict:
         out["conditions"] = conds[:2]
     if eq.get("landing_source"):
         out["landing_source"] = eq["landing_source"]
+    # Reachability lookahead: inputs of this equation that CANNOT be obtained
+    # from what is currently known (no chain in the graph produces them). Picking
+    # this equation would strand the solve on these. Surfaced so the LLM avoids
+    # the dead branch. Only included when non-empty (keeps the prompt small).
+    dead = eq.get("_dead_end_inputs")
+    if dead:
+        out["dead_end_inputs"] = dead
     return out
 
 
@@ -1030,7 +1212,9 @@ def _round_select_call(
             "name":       fi.name,
             "unit":       fi.unit,
             "dimension":  fi.dimension,
-            "candidates": [_format_candidate(eq, known_symbols) for eq in cands],
+            # v8: show ALL equation variables (do not hide "known" ones) — the
+            # LLM must see every variable to bind it (solves_for / known / needed).
+            "candidates": [_format_candidate(eq) for eq in cands],
         }
         needed_sections.append(section)
 
@@ -1191,9 +1375,21 @@ def _round_select_call(
         # decision_log can distinguish "LLM said none fit" from "LLM gave a
         # bad ID we had to fall back from".
         fallback_used = None
+        # v8.1: the LLM can resolve a needed variable WITHOUT an equation — it is
+        # already known (give the source), or it is zero/absent in this scenario.
+        # The resolver obeys these as resolutions, never as dead-ends.
+        resolve_known_source = None
+        resolve_zero         = False
 
         if deferred:
             pass
+        elif decision == "known":
+            resolve_known_source = (sel.get("source")
+                                    or sel.get("known_source") or "")
+            fallback_used = "llm_decision_known"
+        elif decision == "zero":
+            resolve_zero = True
+            fallback_used = "llm_decision_zero"
         elif decision == "none":
             # LLM explicitly says no candidate fits. Surface as no-pick so
             # frontier_resolver fails this round cleanly (and backtracking
@@ -1215,6 +1411,14 @@ def _round_select_call(
                     f"{[c['id'] for c in cands]}"
                 )
 
+        # v8: the LLM's variable binding — how the chosen equation maps onto the
+        # problem, by MEANING. `solves_for` is the equation variable that is our
+        # unknown; `known` maps equation variables to the ALREADY-KNOWN symbol
+        # that supplies each value; `needed` lists equation variables to solve
+        # next. The resolver/executor follow this directly — no symbol/dimension
+        # matching in code.
+        binding_known = sel.get("known") if isinstance(sel.get("known"), dict) else {}
+        binding_needed = sel.get("needed") if isinstance(sel.get("needed"), list) else []
         result.append({
             "frontier_item":      fi,
             "chosen_eq":          chosen_eq,
@@ -1223,6 +1427,11 @@ def _round_select_call(
             "deferred":           deferred,
             "_candidates":        cands,
             "fallback_used":      fallback_used,
+            "solves_for":         sel.get("solves_for"),
+            "known":              {str(k): str(v) for k, v in binding_known.items()},
+            "needed":             [str(x) for x in binding_needed],
+            "resolve_known_source": resolve_known_source,
+            "resolve_zero":         resolve_zero,
         })
         # v7.1.2: log the per-item outcome. Filter logs for
         # event=stage2_item_decision to see what the LLM picked or why it

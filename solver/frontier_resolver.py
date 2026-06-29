@@ -10,10 +10,208 @@ Replaces backward_chain.py.  The key design difference:
 Entry point: resolve_frontier(target, given, graph_index, question, llm_round_fn)
 """
 from __future__ import annotations
+import re as _re
 from collections import deque
 from dataclasses import dataclass, field
 from config import PHYSICAL_CONSTANTS, MAX_CHAIN_DEPTH
 from solver.solver_log import log
+
+
+# ── Binding helpers: OBEY the LLM, never infer physics ────────────────────────
+# The LLM maps an equation onto the problem and tells us, per variable, where its
+# value comes from. These helpers resolve the source the LLM NAMED against the
+# state we actually showed it. They do NOT compare dimensions, units, or guess a
+# physical relationship — they only connect the model's own reference back to an
+# available quantity (by symbol OR by the quantity-name shown in the state doc),
+# and recognize a literal value the model bound (e.g. a term that is zero here).
+
+def _resolve_source(stated, available: dict) -> str | None:
+    """Map the LLM's STATED source for an equation variable onto a real key in
+    `available`. The small model is sloppy about HOW it names the source — it may
+    write the canonical symbol ('k'), the quantity name ('resistivity'), a phrase
+    that leads with the symbol ('k (force constant of spring)'), or even the VALUE
+    ('200 N/m'). All of these are references to things WE showed it, so we resolve
+    every form. This is NOT concept matching — it only connects the model's own
+    reference back to an available quantity. Returns the available symbol or None.
+    """
+    if stated is None:
+        return None
+    s = str(stated).strip()
+    if not s:
+        return None
+
+    def _by_symbol_or_name(text: str) -> str | None:
+        if text in available:
+            return text
+        t = text.lower()
+        for sym, meta in available.items():
+            if sym.lower() == t or str(meta.get("name", "")).strip().lower() == t:
+                return sym
+        return None
+
+    # 1) exact: symbol or quantity-name
+    hit = _by_symbol_or_name(s)
+    if hit:
+        return hit
+    # 2) leading identifier token — handles "k (force constant of spring)",
+    #    "k_spring symbol", "R, the resistance", etc.
+    m = _re.match(r"[A-Za-z_]\w*", s)
+    if m and m.group(0) != s:
+        hit = _by_symbol_or_name(m.group(0))
+        if hit:
+            return hit
+    # 3) the model wrote the VALUE ('200 N/m', '0.5 kg') — connect to the given
+    #    whose numeric value matches. Symbol/name routes are tried first, so this
+    #    only fires when the model gave no usable symbol. Last-resort; first match.
+    #    GUARD: only when the string is a plain number+unit, NOT an inline formula
+    #    like '2*pi*f' or 'sqrt(R^2+XL^2)' (those carry a stray digit but mean
+    #    "derive this" — they must fall through to becoming a sub-goal).
+    is_value = bool(_re.match(r"^\s*[+-]?\d", s)) and not any(
+        tok in s for tok in ("*", "(", ")", "sqrt", "/(",)) and "+" not in s.lstrip("+-")
+    vm = _re.search(r"-?\d+\.?\d*(?:[eE][-+]?\d+)?", s) if is_value else None
+    if vm:
+        try:
+            val = float(vm.group(0))
+        except ValueError:
+            val = None
+        # val == 0 is NOT a reference to a zero-valued given — it means the term
+        # is literally zero (handled by _as_literal). Don't value-match zeros.
+        if val is not None and val != 0:
+            for sym, meta in available.items():
+                av = meta.get("value")
+                if isinstance(av, (int, float)) and not isinstance(av, bool) \
+                        and av != 0 and abs(av - val) <= 1e-9 * max(abs(av), abs(val), 1.0):
+                    return sym
+    return None
+
+
+def _as_literal(stated) -> float | None:
+    """If the LLM bound a variable to a bare number (e.g. "X_C": 0, meaning the
+    term vanishes in THIS scenario), return it as a float. Else None. This lets
+    the model say 'this equation term is zero here' as part of its binding."""
+    if stated is None or isinstance(stated, bool):
+        return None
+    try:
+        return float(str(stated).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_output_var(eq: dict, llm_solves_for, fi_symbol: str) -> str:
+    """Decide which equation variable to actually solve for — robustly, with NO
+    matching. Priority:
+      1. the LLM's `solves_for`, if it is a real variable of this equation;
+      2. the frontier item's own symbol, if it is a variable of this equation
+         (a sub-goal is always a variable of the equation chosen to produce it);
+      3. the equation's DECLARED natural output (authored in the graph) — this is
+         what fixes a malformed `solves_for` like '1/Req': we fall back to the
+         equation's own stated output 'R', never to an arbitrary variable;
+      4. last resort: the LHS symbol of the equation string.
+    The old code's `next(iter(eq_vars))` could pick ANY variable, which silently
+    solved the wrong quantity (e.g. -6.0 Ω). We never do that anymore."""
+    eq_vars = set(eq.get("variables", {}).keys())
+    sf = (llm_solves_for or "").strip() if isinstance(llm_solves_for, str) else ""
+    if sf in eq_vars:
+        return sf
+    if fi_symbol in eq_vars:
+        return fi_symbol
+    nat = (eq.get("natural_output") or eq.get("output") or "").strip()
+    if nat in eq_vars:
+        return nat
+    lhs = eq.get("equation_str", "").split("=")[0].strip()
+    if lhs in eq_vars:
+        return lhs
+    return next(iter(eq_vars), fi_symbol)
+
+
+def _pick_produces_target(sel: dict, fi_symbol: str) -> bool:
+    """Does the LLM say the chosen equation actually PRODUCES the quantity we
+    asked it to solve this round? Structural only — we read the navigator's own
+    binding and compare symbols; NO dimension/name/semantic matching.
+
+    The navigator names the variable it produces in `solves_for` and lists the
+    quantities still missing in `needed`. The tell of a STEPPING-STONE pick is
+    that it lists the very quantity we asked for (`fi_symbol`) as still-needed:
+    it is saying "this equation gives some OTHER variable, the thing you want is
+    still open." Observed verbatim from the 7B:
+      - dielectric cap:  solves_for="C",   needed=["Q"]   (target Q = charge)
+      - flux loop:       solves_for="Phi", needed=["ε"]   (target ε = emf)
+    In both the code used to rename C→Q / Phi→ε and TERMINATE, returning the
+    wrong physical quantity (farads as charge, webers as emf) with HIGH
+    confidence. Honouring the navigator's `needed` flag here is the fix; we obey
+    it instead of overriding it.
+
+    A pick that explicitly sets solves_for to fi_symbol is always treated as
+    producing it (covers the rare case where the model redundantly echoes the
+    target into `needed`).
+
+    Two stepping-stone tells, both structural:
+      (a) the TARGET we asked for is itself still listed in `needed`
+          (solves_for="C", needed=["Q"]  — "gives C, still need charge Q");
+      (b) the equation's OWN output is listed in `needed`
+          (solves_for="C", needed=["C"]  — the model is signalling a downstream
+          step, e.g. reason "...needed to find Q via Q=C*V"). A var cannot be
+          both produced by and missing from the same equation, so this only ever
+          means "this is a prerequisite, not the final equation for fi"."""
+    solves_for = (sel.get("solves_for") or "").strip()
+    if solves_for and solves_for == fi_symbol:
+        return True
+    needed = sel.get("needed") or []
+    if isinstance(needed, dict):
+        needed = list(needed.keys())
+    needed_syms = {str(n).strip() for n in needed}
+    if fi_symbol in needed_syms:                       # (a)
+        return False
+    if solves_for and solves_for in needed_syms:       # (b)
+        return False
+    return True
+
+
+def _solvable_closure(known_syms: set[str], graph_index) -> set[str]:
+    """Forward solvability closure — the LOOKAHEAD the LLM structurally lacks.
+
+    Starting from the known quantities (givens + everything solved so far) plus
+    the physical constants, repeatedly add any variable that SOME equation can
+    OUTPUT because all of that equation's OTHER variables are already in the set.
+    The fixpoint is every quantity the graph can, in principle, produce from what
+    we have.
+
+    This is a STRUCTURAL graph fact — pure reachability, no dimensions, no
+    concept matching, no equation-to-equation comparison. It is used ONLY to
+    ADVISE the LLM (annotate candidates as obtainable / dead-end); the LLM still
+    chooses. A variable left OUT of the closure cannot be reached from the
+    current knowns by any chain, so an equation that needs it is a dead branch.
+    """
+    reachable = set(known_syms) | set(PHYSICAL_CONSTANTS)
+    nodes = getattr(graph_index, "nodes", None) or []
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            vs = set(node.get("variables", {}).keys())
+            if not vs:
+                continue
+            for v in vs:
+                if v not in reachable and (vs - {v}) <= reachable:
+                    reachable.add(v)
+                    changed = True
+    return reachable
+
+
+def _annotate_reachability(candidates: list, output_sym: str,
+                           known_syms: set, closure: set) -> None:
+    """Tag each candidate equation in place with `_dead_end_inputs`: the inputs
+    that CANNOT be obtained from the current knowns (not in the closure, not the
+    quantity this equation would solve, not a known, not a constant). Choosing
+    such a candidate strands the chain on an unreachable quantity. The LLM is
+    shown this so it can avoid the dead branch — it is advice, not a filter."""
+    for cand in candidates:
+        dead = [
+            v for v in cand.get("variables", {})
+            if v not in closure and v not in known_syms
+            and v != output_sym and v not in PHYSICAL_CONSTANTS
+        ]
+        cand["_dead_end_inputs"] = dead
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -31,15 +229,29 @@ class FrontierItem:
 @dataclass
 class ResolvedStep:
     """
-    One chosen equation in the solution plan.
-    solves_for: the FrontierItem this equation resolves.
-    inputs_used: symbols that will be substituted (excluding constants).
+    One chosen equation in the solution plan, as bound by the LLM.
+
+    v8 — the LLM tells us how the equation maps onto the problem; the code does
+    NO symbol/dimension matching:
+      output_var       : the equation variable to solve for (LLM "solves_for").
+      resolves_symbol  : the quantity-key this step's result is stored under
+                         (the frontier item it resolves). May differ from
+                         output_var when the equation names it differently.
+      value_binding    : {equation_variable: source_key} — for each input
+                         variable, the key (a given symbol, a constant, or
+                         another step's resolves_symbol) whose value to
+                         substitute. This is the LLM's `known`/`needed` mapping.
     """
     equation:          dict
     solves_for:        FrontierItem
     inputs_used:       list[str]
     round_num:         int
     llm_reason:        str
+    output_var:        str = ""
+    resolves_symbol:   str = ""
+    value_binding:     dict = field(default_factory=dict)
+    literal_values:    dict = field(default_factory=dict)  # {eq_var: number} — terms
+    #                          the LLM bound to a literal (e.g. a vanishing term = 0)
     conditions_concern: str | None = None
     is_provisional:    bool = False   # flagged condition, may be swapped on backtrack
 
@@ -69,11 +281,14 @@ class ResolutionResult:
     failure_reason: str = ""
     decision_log:   list[dict] = field(default_factory=list)
     status:         str = "SUCCESS"     # "SUCCESS" | "UNVERIFIED"
-    dead_end_root_eq: str = ""          # v7.2.2: the Round-0 equation whose
-    #                                     chain dead-ended, so the caller can
-    #                                     exclude it and try the next Round-0
-    #                                     node (the "drop node, go to next of
-    #                                     top-5" rollback).
+    dead_end_root_eq: str = ""          # the DEEPEST (round>0) equation to ban so
+    #                                     the retry re-picks an alternative sub-eq
+    #                                     for the same sub-goal. "" means there is
+    #                                     no deeper culprit — drop the whole node.
+    landing_eq_id:   str = ""           # the Round-0 landing equation. The caller
+    #                                     drops THIS (clean slate) only when there
+    #                                     is no deeper culprit left — the "go to
+    #                                     the next top-5 node" recovery.
 
 
 # ── Topological sort + cycle detection ───────────────────────────────────────
@@ -93,17 +308,17 @@ def _topological_sort(
         return [], []
 
     n = len(steps)
-    # symbol → index of step that produces it
-    produces: dict[str, int] = {steps[i].solves_for.symbol: i for i in range(n)}
+    # resolves_symbol → index of the step that produces that quantity's value
+    produces: dict[str, int] = {steps[i].resolves_symbol: i for i in range(n)}
 
-    # deps[i] = set of step indices that step i depends on
+    # deps[i] = set of step indices that step i depends on. A step needs every
+    # value_binding SOURCE that another step produces (the LLM's binding tells us
+    # the dependency graph directly — no symbol scanning).
     deps: list[set[int]] = [set() for _ in range(n)]
     for i, step in enumerate(steps):
-        eq_vars = set(step.equation["variables"].keys())
-        inputs_needed = eq_vars - {step.solves_for.symbol} - PHYSICAL_CONSTANTS
-        for inp in inputs_needed:
-            if inp in produces and produces[inp] != i:
-                deps[i].add(produces[inp])
+        for src in set(step.value_binding.values()) - PHYSICAL_CONSTANTS:
+            if src in produces and produces[src] != i:
+                deps[i].add(produces[src])
 
     # Kahn's algorithm (index-based)
     in_degree  = [len(deps[i]) for i in range(n)]
@@ -191,13 +406,18 @@ def _deepest_culprit_on_branch(failed_fi, chosen_steps: list) -> str:
 
     if not branch_steps:
         return ""
-    # Prefer the deepest (highest round) non-landing equation on the branch.
+    # Only ever blame a DEEPER (round > 0) equation. The round-0 landing is the
+    # LLM's concept choice for the whole problem; a deep sub-goal that can't
+    # close is NOT a reason to ban it (doing so cascades: ban a deep eq, the
+    # intermediate it produced loses its only source, then the landing gets
+    # blamed and re-landing rejects everything). If nothing deeper is to blame,
+    # return "" — the caller then drops the WHOLE node (the landing) with a
+    # clean slate, the user's "try the next top-5" recovery, instead of
+    # accumulating bans that doom every subsequent attempt.
     non_landing = [s for s in branch_steps if s.round_num > 0]
-    pick_from = non_landing or branch_steps
-    deepest = max(pick_from, key=lambda s: s.round_num)
-    # Never return a round-0 landing if a deeper step exists on the branch.
-    if deepest.round_num == 0 and non_landing:
-        deepest = max(non_landing, key=lambda s: s.round_num)
+    if not non_landing:
+        return ""
+    deepest = max(non_landing, key=lambda s: s.round_num)
     return deepest.equation["id"]
 
 
@@ -268,6 +488,14 @@ def resolve_frontier(
     chosen_steps: list[ResolvedStep] = []
     decision_log: list[dict] = []
     already_targeted: set[str] = set()
+    # The symbol the final answer is stored under. The round-0 step resolves the
+    # target and stores its value under target.symbol (resolves_symbol), even
+    # when the equation solved a differently-named variable (output_var), so the
+    # final answer is always keyed by what Stage 1 called the unknown.
+    resolved_target_symbol: str = target.symbol
+    # The Round-0 landing equation (the LLM's concept choice for the whole
+    # problem). Never banned by a deep dead-end; only dropped as a whole node.
+    landing_eq_id: str = ""
 
     for round_num in range(max_rounds):
         if not frontier:
@@ -278,6 +506,10 @@ def resolve_frontier(
         # knowns-overlap ranking (Round 1+) and the state document.
         known_symbols = {sym for sym, meta in available.items()
                          if meta.get("value") is not None}
+        # Reachability lookahead for THIS round: every quantity the graph can
+        # produce from what we currently know. Candidates needing anything
+        # outside this set are flagged dead-end branches for the LLM.
+        reach_closure = _solvable_closure(known_symbols, graph_index)
         # ── Steps 1+2 differ by round ────────────────────────────────────────
         # v7.2.4: Round 0 (initial landing) is now a SEQUENTIAL SCAN down the
         # pure-semantic ranked list — the user's design. We retrieve the top_k
@@ -333,6 +565,7 @@ def resolve_frontier(
             scan_pos = 0
             for scan_pos, cand in enumerate(ranked):
                 # Ask the LLM about THIS ONE node only: does its concept fit?
+                _annotate_reachability([cand], fi.symbol, known_symbols, reach_closure)
                 one = [{"frontier_item": fi, "candidates": [cand]}]
                 sel = llm_round_fn(
                     question=question,
@@ -342,16 +575,24 @@ def resolve_frontier(
                     solve_context=solve_context,
                 )
                 picked = sel and sel[0].get("chosen_eq") is not None
+                # Stepping-stone guard: the LLM may "pick" an equation that, by
+                # its OWN binding, produces a different quantity and still lists
+                # our target in `needed` (e.g. dielectric cap gives C, target is
+                # Q). Such a node does not land the target — keep scanning so a
+                # later candidate that actually produces it (e.g. q=C*V) is found.
+                stepping_stone = picked and not _pick_produces_target(sel[0], fi.symbol)
                 log("landing_scan_node",
                     rank=scan_pos,
                     eq_id=cand["id"],
                     score=cand.get("_retrieval_score"),
-                    decision="pick" if picked else "reject",
+                    decision=("pick" if picked and not stepping_stone
+                              else "reject_stepping_stone" if stepping_stone
+                              else "reject"),
                     reason=(sel[0].get("reason", "") if sel else ""))
-                if picked:
+                if picked and not stepping_stone:
                     selections = sel
                     break
-                # rejected → continue down the ranked list to the next node
+                # rejected (or stepping-stone) → continue down the ranked list
             if not selections:
                 # Walked the whole ranked list; the LLM accepted none. For a
                 # well-formed question the right concept is in the top_k, so
@@ -393,6 +634,7 @@ def resolve_frontier(
                     retriever     = retriever,
                     known_symbols = known_symbols,
                 )
+                _annotate_reachability(candidates, fi.symbol, known_symbols, reach_closure)
                 round_data.append({"frontier_item": fi, "candidates": candidates})
 
             if len(round_data) > 1 and estimate_round_tokens(round_data) > MAX_CANDIDATES_TOKENS_PER_ROUND:
@@ -455,6 +697,50 @@ def resolve_frontier(
                 })
                 continue
 
+            # ── Resolve WITHOUT an equation: the LLM says this variable is
+            # already known, or is zero/absent in this scenario ───────────────
+            # The pick-time binding can under-bind a variable (the 7B sometimes
+            # omits it from `known`), so it surfaces here as a sub-goal. The LLM
+            # then correctly tells us it needs no equation: it's already in the
+            # state, or it vanishes here. We OBEY that — back-patch the equation
+            # that introduced the variable and move on. This is NOT a dead-end;
+            # banning the (correct) introducing equation over it was the bug.
+            resolve_known = sel.get("resolve_known_source")
+            resolve_zero  = sel.get("resolve_zero")
+            if (resolve_known or resolve_zero) and fi.introduced_by:
+                intro_step = next(
+                    (s for s in chosen_steps
+                     if s.equation["id"] == fi.introduced_by), None)
+                how = None
+                if intro_step is not None:
+                    if resolve_zero:
+                        intro_step.literal_values[fi.symbol] = 0.0
+                        intro_step.value_binding[fi.symbol]  = fi.symbol
+                        how = "zero"
+                    else:
+                        resolved = (_resolve_source(resolve_known, available)
+                                    or _resolve_source(fi.symbol, available))
+                        if resolved is not None:
+                            intro_step.value_binding[fi.symbol] = resolved
+                            how = f"known={resolved}"
+                if how is not None:
+                    log("subgoal_resolved_without_equation",
+                        round_num=round_num, symbol=fi.symbol,
+                        introduced_by=fi.introduced_by, how=how,
+                        reason=(sel.get("reason", "") or "")[:200])
+                    decision_log.append({
+                        "round": round_num, "solving_for": fi.symbol,
+                        "solving_for_name": fi.name, "chosen_eq_id": None,
+                        "equation_str": None, "reason": sel.get("reason", ""),
+                        "conditions_concern": None, "fallback_used": None,
+                        "n_candidates": len(candidates_shown),
+                        "candidates_shown": [],
+                        "decision": "resolved_zero" if resolve_zero else "resolved_known",
+                    })
+                    continue  # variable accounted for — not a sub-goal, not a dead-end
+                # else: couldn't back-patch (no intro step, or unresolved source)
+                # → fall through to the normal no-pick / dead-end handling below.
+
             eq: dict = sel.get("chosen_eq")
             if eq is None:
                 # No equation was picked — either no candidates at all, or
@@ -484,76 +770,176 @@ def resolve_frontier(
                     ],
                     "decision":           "none",
                 })
-                # v7.2.5: report the SPECIFIC equation to exclude so the
-                # pipeline re-picks the actual culprit, NEVER the good landing.
-                # When chasing `fi` dead-ends, the bad pick is the DEEPEST
-                # equation on the failed branch — the one whose own inputs we
-                # couldn't meet — not the shallow equation that merely asked
-                # for `fi`. The previous logic blamed `fi.introduced_by`, which
-                # for a sub-variable directly under the landing node IS the
-                # landing node, so a deep dead-end (e.g. K=½mv² → v → u → s, and
-                # `s` can't close) wrongly banned K=½mv² and it vanished from the
-                # next retrieval. We instead walk the chosen steps along the
-                # branch that introduced `fi` and exclude the deepest one, so
-                # the retry re-picks THAT step and keeps the correct landing +
-                # all good earlier steps. `fi.introduced_by` is the fallback for
-                # a direct first-level miss; the landing node is excluded only
-                # when it is itself the sole step (nothing deeper to blame).
+                # Report a DEEP culprit to ban so the retry re-picks an
+                # alternative sub-equation for the SAME sub-goal — keeping the
+                # correct landing committed. `fi.introduced_by` (a round>0 step)
+                # is the fallback for a direct miss. We NEVER ban the round-0
+                # landing here: if there is no deeper culprit, dead_end_root_eq
+                # stays "" and we hand the caller the landing id separately, so
+                # it can drop the WHOLE node with a clean slate (the user's
+                # "next top-5" recovery) instead of cascading bans.
                 culprit_eq = _deepest_culprit_on_branch(fi, chosen_steps)
                 if not culprit_eq:
-                    culprit_eq = fi.introduced_by or ""
-                if not culprit_eq:
-                    for s in chosen_steps:
-                        if s.round_num == 0:
-                            culprit_eq = s.equation["id"]
-                            break
+                    intro = fi.introduced_by or ""
+                    # only accept the fallback if it is a deeper (non-landing) step
+                    if intro and intro != landing_eq_id:
+                        culprit_eq = intro
                 return ResolutionResult(
                     plan=[], final_symbol=target.symbol, success=False,
                     failure_reason=reason_for_failure,
                     decision_log=decision_log,
                     status="UNVERIFIED",
                     dead_end_root_eq=culprit_eq,
+                    landing_eq_id=landing_eq_id,
                 )
 
-            # Record the step
             eq_vars = set(eq["variables"].keys())
-            inputs = [
-                s for s in eq_vars
-                if s != fi.symbol and s not in PHYSICAL_CONSTANTS
-            ]
+
+            # ── Enforce the working-memory rule (NO matching — structural) ─────
+            # An equation chosen to solve a SUB-goal must not pull back in a
+            # quantity that is still being solved upstream (the ultimate goal, or
+            # a committed step's not-yet-computed output). That creates a circular
+            # dependency the solver collapses to a degenerate 0 (the bogus
+            # "simultaneous → 0.0" failures). This is exactly the user's rule:
+            # "the equations not to use are the ones that contain the unknown."
+            # We reject the pick and hand this equation back as the culprit, so
+            # the pipeline bans it and the LLM re-picks a different neighbour.
+            if fi.symbol != target.symbol:  # never applies to the round-0 target itself
+                being_solved = ({target.symbol}
+                                | {s.resolves_symbol for s in chosen_steps}
+                                | {s.output_var for s in chosen_steps})
+                reintroduced = (eq_vars & being_solved) - {fi.symbol}
+                if reintroduced:
+                    log("subgoal_pick_rejected_cycle",
+                        round_num=round_num, symbol=fi.symbol,
+                        eq_id=eq["id"], reintroduces=sorted(reintroduced))
+                    decision_log.append({
+                        "round": round_num, "solving_for": fi.symbol,
+                        "solving_for_name": fi.name, "chosen_eq_id": eq["id"],
+                        "equation_str": eq["equation_str"],
+                        "reason": (f"Rejected: this equation re-introduces "
+                                   f"{sorted(reintroduced)}, which is still being "
+                                   f"solved — that would create a circular chain."),
+                        "conditions_concern": None, "fallback_used": "cycle_guard",
+                        "n_candidates": len(candidates_shown),
+                        "candidates_shown": [], "decision": "reject_cycle",
+                    })
+                    return ResolutionResult(
+                        plan=[], final_symbol=target.symbol, success=False,
+                        failure_reason=(f"Circular pick for '{fi.symbol}': "
+                                        f"{eq['id']} re-introduces {sorted(reintroduced)}."),
+                        decision_log=decision_log, status="UNVERIFIED",
+                        dead_end_root_eq=eq["id"], landing_eq_id=landing_eq_id,
+                    )
+
+            # ── Stepping-stone guard (structural — honour the LLM's binding) ──
+            # The LLM picked an equation but, by its OWN binding, it produces a
+            # different quantity and still lists fi.symbol in `needed` (e.g. it
+            # picked flux Phi=B*A*cos(theta) for the emf sub-goal and said emf is
+            # still needed). Committing it would rename the wrong quantity to fi
+            # and report it (webers as emf). Reject + hand the equation back as
+            # the culprit so the neighbour walk re-picks one that produces fi.
+            if not _pick_produces_target(sel, fi.symbol):
+                log("subgoal_pick_rejected_stepping_stone",
+                    round_num=round_num, symbol=fi.symbol, eq_id=eq["id"],
+                    solves_for=sel.get("solves_for"), needed=sel.get("needed"))
+                decision_log.append({
+                    "round": round_num, "solving_for": fi.symbol,
+                    "solving_for_name": fi.name, "chosen_eq_id": eq["id"],
+                    "equation_str": eq["equation_str"],
+                    "reason": (f"Rejected: by its own binding this equation "
+                               f"produces '{sel.get('solves_for')}', not "
+                               f"'{fi.symbol}' (still listed as needed) — it is a "
+                               f"stepping-stone, not the equation for this quantity."),
+                    "conditions_concern": None,
+                    "fallback_used": "stepping_stone_guard",
+                    "n_candidates": len(candidates_shown),
+                    "candidates_shown": [], "decision": "reject_stepping_stone",
+                })
+                culprit_eq = eq["id"] if eq["id"] != landing_eq_id else \
+                    _deepest_culprit_on_branch(fi, chosen_steps)
+                return ResolutionResult(
+                    plan=[], final_symbol=target.symbol, success=False,
+                    failure_reason=(f"Stepping-stone pick for '{fi.symbol}': "
+                                    f"{eq['id']} produces "
+                                    f"'{sel.get('solves_for')}', not the target."),
+                    decision_log=decision_log, status="UNVERIFIED",
+                    dead_end_root_eq=culprit_eq, landing_eq_id=landing_eq_id,
+                )
+
+            # ── Follow the LLM's variable binding (NO matching in code) ───────
+            # The LLM mapped the equation onto the problem by MEANING and told us:
+            #   solves_for : which equation variable IS this unknown,
+            #   known      : {equation_var -> ALREADY-KNOWN symbol giving its value},
+            #   needed     : equation variables still to solve.
+            # The code obeys it — it never compares symbols or dimensions itself.
+            output_var = _pick_output_var(eq, sel.get("solves_for"), fi.symbol)
+            llm_known = sel.get("known") or {}
+
+            # Where each input variable's value comes from. We OBEY the LLM's
+            # binding: resolve the source it named against the state we showed it
+            # (by symbol OR quantity-name), and honor a literal it bound (e.g. a
+            # term that is zero in this scenario). Constants map to themselves.
+            # Anything the LLM left genuinely unbound becomes a new sub-goal.
+            value_binding:  dict[str, str]   = {}
+            literal_values: dict[str, float] = {}
+            for v in eq_vars:
+                if v == output_var:
+                    continue
+                if v in PHYSICAL_CONSTANTS:
+                    value_binding[v] = v
+                    continue
+                stated   = llm_known.get(v)
+                resolved = _resolve_source(stated, available)
+                if resolved is not None:
+                    value_binding[v] = resolved          # bound to a known quantity
+                    continue
+                lit = _as_literal(stated)
+                if lit is not None:
+                    literal_values[v] = lit              # bound to a literal (e.g. 0)
+                    value_binding[v]  = v
+                    continue
+                value_binding[v] = v                     # genuine sub-goal
+
             step = ResolvedStep(
                 equation=eq,
                 solves_for=fi,
-                inputs_used=inputs,
+                inputs_used=[v for v, src in value_binding.items()
+                             if src == v and v not in PHYSICAL_CONSTANTS
+                             and v not in literal_values],
                 round_num=round_num,
                 llm_reason=sel.get("reason", ""),
+                output_var=output_var,
+                resolves_symbol=fi.symbol,
+                value_binding=value_binding,
+                literal_values=literal_values,
                 conditions_concern=sel.get("conditions_concern"),
                 is_provisional=bool(sel.get("conditions_concern")),
             )
             chosen_steps.append(step)
+            if round_num == 0:
+                landing_eq_id = eq["id"]
             visited_eqs.add(eq["id"])
+            # This step makes fi.symbol computable — register it so later rounds
+            # and the state document can treat it as an available quantity.
+            available.setdefault(fi.symbol, {
+                "value": None, "name": fi.name,
+                "unit": fi.unit, "dimension": fi.dimension})
 
-            # What new quantities does this equation introduce?
-            for sym, meta in eq["variables"].items():
-                if sym == fi.symbol:
+            # New sub-goals: every input the LLM did NOT bind to a known quantity
+            # or to a literal. (A term resolved to a literal value — e.g. 0 — is
+            # accounted for, so it is NOT chased as a sub-goal.)
+            for v, src in value_binding.items():
+                if v in PHYSICAL_CONSTANTS or src != v or v in literal_values:
+                    continue  # constant, known from an existing quantity, or literal
+                if v in available or v in seen_in_frontier or v in already_targeted:
                     continue
-                if sym in PHYSICAL_CONSTANTS:
-                    continue
-                if sym in available:
-                    continue
-                if sym in seen_in_frontier:
-                    continue
-                if sym in already_targeted:
-                    continue
-                new_fi = FrontierItem(
-                    symbol=sym,
-                    name=meta.get("name", sym),
-                    unit=meta.get("unit", ""),
-                    dimension=meta.get("dimension", ""),
-                    introduced_by=eq["id"],
-                )
-                new_frontier.append(new_fi)
-                seen_in_frontier.add(sym)
+                meta = eq["variables"][v]
+                new_frontier.append(FrontierItem(
+                    symbol=v, name=meta.get("name", v),
+                    unit=meta.get("unit", ""), dimension=meta.get("dimension", ""),
+                    introduced_by=eq["id"]))
+                seen_in_frontier.add(v)
 
             # Decision log entry — now includes everything the LLM saw,
             # not just what it picked.
@@ -584,6 +970,7 @@ def resolve_frontier(
             failure_reason=f"Could not resolve quantities: {unresolved}",
             decision_log=decision_log,
             status="UNVERIFIED",
+            landing_eq_id=landing_eq_id,
         )
 
     given_syms = set(given.keys())
@@ -592,7 +979,7 @@ def resolve_frontier(
 
     return ResolutionResult(
         plan=plan,
-        final_symbol=target.symbol,
+        final_symbol=resolved_target_symbol,
         success=True,
         decision_log=decision_log,
         status="SUCCESS",

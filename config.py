@@ -10,7 +10,15 @@ load_dotenv()
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR        = Path(__file__).parent
 DATA_DIR        = BASE_DIR / "data"
-MAIN_GRAPH_PATH = DATA_DIR / "physics_equation_graph_final.json"
+# v8: the compiled, dimensionally-validated bipartite graph produced by
+# `python -m graph_builder.compile`. It ships a canonical variable registry
+# (one symbol per physical quantity) + alias map, so symbol canonicalization is
+# registry-driven (see GraphIndex.canonical). CUTOVER REQUIRES A RE-INGEST:
+# `python -m solver.ingest --reingest` (the Chroma/BM25 indexes must be rebuilt
+# from these nodes, or retrieval returns ids that no longer exist).
+# To roll back to the legacy graph, restore the line below.
+MAIN_GRAPH_PATH = DATA_DIR / "physics_graph_v8.json"
+# MAIN_GRAPH_PATH = DATA_DIR / "physics_equation_graph_final.json"  # legacy (buggy)
 CHROMA_DIR      = str(BASE_DIR / "chroma_db")
 BM25_INDEX_PATH = str(BASE_DIR / "bm25_index.pkl")
 
@@ -65,10 +73,11 @@ MAX_CANDIDATES_TOKENS_PER_ROUND = 4000
 # underscored form ('epsilon_0', 'mu_0') in v7.
 PHYSICAL_CONSTANTS = {
     'g', 'pi', 'c',
-    'h_planck', 'k_B', 'R_g', 'NA', 'N_A',
+    'h_planck', 'k_B', 'R_g', 'R_gas', 'NA', 'N_A',
     'epsilon_0', 'epsilon0',
     'mu_0', 'mu0',
     'e_charge',
+    'k_e',          # Coulomb constant (graph uses k_e in Coulomb's law / field)
     'G',
 }
 
@@ -77,8 +86,8 @@ PHYSICAL_CONSTANTS = {
 # 'g' is deliberately EXCLUDED (Earth-surface, not a constant of nature).
 UNIVERSAL_CONSTANTS = {
     'pi', 'c', 'G',
-    'epsilon_0', 'mu_0',
-    'h_planck', 'k_B', 'R_g', 'NA',
+    'epsilon_0', 'mu_0', 'k_e',
+    'h_planck', 'k_B', 'R_g', 'R_gas', 'NA',
     'e_charge',
 }
 
@@ -121,8 +130,14 @@ SYMBOL_ALIASES = {
     'Ek':   'K',
     'KE':   'K',
     'E_kin': 'K',
-    'K_max': 'K',     # max KE (photoelectric) — same quantity, same dimension
-    'KE_max': 'K',
+    # Photoelectric max KE: the graph's photoelectric node is
+    # `Kmax = h_planck*nu - W0`, i.e. the landing symbol is 'Kmax', NOT the
+    # generic kinetic-energy 'K' (= 1/2 m v^2). Mapping these to 'K' sent the
+    # resolver to the wrong equation (verified: Q45 searched 'K' and rejected
+    # all candidates). Map to the graph's actual 'Kmax'.
+    'K_max':  'Kmax',
+    'KE_max': 'Kmax',
+    'Kmax_pe': 'Kmax',
     'KE_lost': 'K',
     # Potential energy: graph uses U
     'E_p':  'U',
@@ -188,9 +203,15 @@ SYMBOL_ALIASES = {
 # one of these symbols, the canonical target is chosen by matching the
 # dimension Stage 1 also reported. Format: {ambiguous_sym: {dimension: canonical}}
 SYMBOL_ALIASES_BY_DIMENSION = {
-    'E': {
-        'ML2T-2': 'K',   # energy dimension → kinetic energy (most common 'E' in mechanics)
-    },
+    # NOTE: the old 'E' (energy dim) → 'K' rule was REMOVED in v7.2.6. It was
+    # meant to catch a question that called kinetic energy 'E', but it ALSO
+    # rewrote photon energy — graph node modern_physics_photon_energy is
+    # `E = h_planck*nu`, which legitimately uses 'E' — so every photon-energy
+    # question got redirected to kinetic-energy 'K' and failed (verified Q44).
+    # Energy-dimensioned 'E' is genuinely ambiguous (photon E vs kinetic K vs
+    # Young's modulus etc.) and dimension cannot disambiguate it; leave bare 'E'
+    # alone so it matches the graph's photon-energy node. The explicit KE
+    # aliases above (KE, E_k, E_kin → K) still handle the common KE spellings.
     # Bare 'R' is overloaded: resistance (graph: R_e) vs projectile range
     # (graph: R, dimension L). Only remap to R_e when Stage 1 reports the
     # electrical-resistance dimension; a range query (dimension L) is left as
@@ -312,6 +333,23 @@ IMPLICIT_CONSTANTS_CATALOG: dict[str, dict] = {
         "value": 8.314, "unit": "J/(mol·K)",
         "name": "universal gas constant", "dimension": "ML2T-2N-1Theta-1",
         "cue": "ideal gas, molar, PV=nRT",
+    },
+    # The compiled graph (registry) names the gas constant 'R_gas'; the catalog
+    # historically used 'R_g'. Both are listed so the executor has a value under
+    # whichever symbol an equation uses and the resolver never chases it.
+    "R_gas": {
+        "value": 8.314, "unit": "J/(mol·K)",
+        "name": "universal gas constant", "dimension": "ML2T-2N-1Theta-1",
+        "cue": "ideal gas, molar, PV=nRT",
+    },
+    # Coulomb constant k_e = 1/(4*pi*epsilon_0). The graph's Coulomb's-law and
+    # point-charge-field equations use 'k_e'; without this entry it had no value
+    # (executor) AND was treated as an unknown sub-goal (resolver) — which banned
+    # the correct landing and failed every electrostatics chain.
+    "k_e": {
+        "value": 8.9875517873681764e9, "unit": "N·m^2/C^2",
+        "name": "Coulomb constant", "dimension": "ML3T-4A-2",
+        "cue": "Coulomb's law, electrostatic force between charges, point-charge field",
     },
     "NA": {
         "value": 6.022e23, "unit": "mol^-1",

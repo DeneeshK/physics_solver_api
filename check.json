@@ -1,0 +1,82 @@
+{
+  "summary": {
+    "total": 4,
+    "passed": 1
+  },
+  "records": [
+    {
+      "id": "electromagnetic_induction_single_step_01",
+      "domain": "electromagnetic_induction",
+      "reasoning_type": "single_step",
+      "difficulty": "easy",
+      "question": "The magnetic flux through a coil changes by 0.4 Wb in 0.2 s. Find the magnitude of the induced emf.",
+      "expected_answer": 2.0,
+      "expected_unit": "V",
+      "passed": false,
+      "failure_stage": "stage2_selection",
+      "detail": "answer 0.0 differs from 2.0 by 100.0% (tol 1.0%)",
+      "got_value": 0.0,
+      "got_unit": "V",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "V = emf - I*r_int \u2192 e"
+      ],
+      "got_error": ""
+    },
+    {
+      "id": "electromagnetic_induction_multi_step_chain_01",
+      "domain": "electromagnetic_induction",
+      "reasoning_type": "multi_step_chain",
+      "difficulty": "medium",
+      "question": "A square conducting loop of side 0.2 m is being pulled out of a region of uniform magnetic field B = 0.5 T at a constant speed of 2 m/s, with the field perpendicular to the plane of the loop. Find the magnitude of the induced emf while one side is still in the field.",
+      "expected_answer": 0.2,
+      "expected_unit": "V",
+      "passed": false,
+      "failure_stage": "answer_mismatch",
+      "detail": "answer 0.1 differs from 0.2 by 50.0% (tol 1.0%)",
+      "got_value": 0.1,
+      "got_unit": "Wb",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "Phi = B*A*cos(theta) \u2192 \u03b5"
+      ],
+      "got_error": ""
+    },
+    {
+      "id": "magnetism_single_step_01",
+      "domain": "magnetism",
+      "reasoning_type": "single_step",
+      "difficulty": "easy",
+      "question": "An electron moves with speed 1e6 m/s perpendicular to a uniform magnetic field of magnitude 0.5 T. Find the magnitude of the magnetic force acting on it. Take electron charge magnitude = 1.6e-19 C.",
+      "expected_answer": 8e-14,
+      "expected_unit": "N",
+      "passed": false,
+      "failure_stage": "stage2_selection",
+      "detail": "answer 0.0 differs from 8e-14 by 8.0% (tol 1.0%)",
+      "got_value": 0.0,
+      "got_unit": "",
+      "got_confidence": "UNVERIFIED",
+      "got_chain": [],
+      "got_error": "Stage 2 failed: LLM rejected all 7 candidate(s) for 'theta' in round 1 (llm_decision_none)."
+    },
+    {
+      "id": "magnetism_multi_step_chain_01",
+      "domain": "magnetism",
+      "reasoning_type": "multi_step_chain",
+      "difficulty": "medium",
+      "question": "A long straight wire carries a steady current of 10 A. Find the magnitude of the magnetic field at a point 5 cm from the wire. Take mu_0 = 4*pi*1e-7 T*m/A.",
+      "expected_answer": 4e-05,
+      "expected_unit": "T",
+      "passed": true,
+      "failure_stage": null,
+      "detail": "answer 4.0000000000000085e-05 within 2.0% of 4e-05",
+      "got_value": 4.0000000000000085e-05,
+      "got_unit": "T",
+      "got_confidence": "HIGH",
+      "got_chain": [
+        "B = mu_0*I/(2*pi*r) \u2192 B"
+      ],
+      "got_error": ""
+    }
+  ]
+}

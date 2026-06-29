@@ -438,6 +438,11 @@ def main():
                     help="Write a detailed per-question JSON report to this path.")
     ap.add_argument("--limit", type=int, default=None,
                     help="Only evaluate the first N questions (smoke test).")
+    ap.add_argument("--only", default=None,
+                    help="Run only matching questions (comma-separated). Each "
+                         "term matches by 1-based index (e.g. 7), exact id, or "
+                         "case-insensitive substring of the id. "
+                         "Example: --only 7,19  or  --only capacitors,emi")
     args = ap.parse_args()
 
     # Load bank
@@ -446,7 +451,24 @@ def main():
         print("No questions loaded. Check your bank path(s).")
         print(f"  Looked for: {args.bank}")
         sys.exit(1)
-    if args.limit:
+
+    if args.only:
+        terms = [t.strip() for t in args.only.split(",") if t.strip()]
+        selected = []
+        for idx, q in enumerate(bank, 1):
+            qid = str(q.get("id", ""))
+            for t in terms:
+                if (t == str(idx)) or (t == qid) or (t.lower() in qid.lower()):
+                    selected.append(q)
+                    break
+        if not selected:
+            print(f"No questions matched --only {args.only!r}.")
+            print("  Available ids:")
+            for idx, q in enumerate(bank, 1):
+                print(f"    [{idx}] {q.get('id', '<no-id>')}")
+            sys.exit(1)
+        bank = selected
+    elif args.limit:
         bank = bank[:args.limit]
 
     print(f"Loaded {len(bank)} questions from: {', '.join(args.bank)}")

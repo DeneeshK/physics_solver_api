@@ -120,6 +120,65 @@ def _normalize_dimension(dim: str) -> tuple:
     return tuple(sorted((k, v) for k, v in exponents.items() if v != 0))
 
 
+_UNIT_SUPERSCRIPT = str.maketrans({
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+    "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁻": "-", "−": "-", "·": "*",
+})
+
+
+_GREEK = {
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "Δ": "Delta",
+    "ε": "epsilon", "ζ": "zeta", "η": "eta", "θ": "theta", "ϑ": "theta",
+    "ι": "iota", "κ": "kappa", "λ": "lambda", "μ": "mu", "ν": "nu", "ξ": "xi",
+    "π": "pi", "ρ": "rho", "σ": "sigma", "ς": "sigma", "τ": "tau",
+    "φ": "phi", "ϕ": "phi", "χ": "chi", "ψ": "psi", "ω": "omega",
+    "Ω": "Omega", "Φ": "Phi", "Σ": "Sigma", "Λ": "Lambda", "Γ": "Gamma",
+    "Θ": "Theta", "Π": "Pi", "Ψ": "Psi",
+}
+
+
+def _greek_to_ascii(s: str) -> str:
+    """Replace unicode Greek letters with their spelled-out ASCII names so a
+    Stage-1 'σ'/'λ'/'ω' matches the registry's 'sigma'/'lambda'/'omega'."""
+    if not s:
+        return s
+    if any(ch in _GREEK for ch in s):
+        return "".join(_GREEK.get(ch, ch) for ch in s)
+    return s
+
+
+# Generic words that carry no disambiguating power in a quantity name. Two
+# quantities sharing only these (e.g. "kinetic energy" vs "potential energy",
+# both have "energy") are NOT the same concept — distinctive tokens must match.
+_CONCEPT_STOP = {
+    "of", "the", "a", "an", "in", "on", "at", "to", "and", "or", "per", "due",
+    "from", "for", "with", "by", "its", "out", "into",
+    "energy", "force", "velocity", "speed", "time", "number", "total", "net",
+    "constant", "value", "quantity", "amount", "rate", "change",
+}
+
+
+def _concept_tokens(name: str) -> set:
+    """Distinctive lowercase word tokens of a quantity name (length>2, minus
+    generic stopwords). Used to decide whether two names denote the same
+    physical concept."""
+    if not name:
+        return set()
+    return {t for t in re.findall(r"[a-z]+", name.lower())
+            if len(t) > 2 and t not in _CONCEPT_STOP}
+
+
+def _normalize_unit(u: str) -> str:
+    """Loosely normalize a unit string so Stage-1 spellings compare equal to the
+    registry's. Folds unicode superscripts/middots, drops '^' and spaces, so
+    'm/s²' == 'm/s^2', 'kg·m^2' == 'kg*m^2'. Case is preserved ('C' coulomb is
+    NOT 'c'). Returns "" for falsy input."""
+    if not u:
+        return ""
+    u = u.translate(_UNIT_SUPERSCRIPT)
+    return u.replace("^", "").replace(" ", "")
+
+
 def _dimensions_compatible(stored_dim: str, needed_dim: str) -> bool:
     """
     True if needed_dim is compatible with stored_dim.
@@ -144,6 +203,23 @@ class GraphIndex:
 
         # ── Graph edges (kept for legacy neighbor-expansion if needed) ────────
         self.edges: list[dict] = main_graph["edges"]
+
+        # ── Canonical variable registry (v8 graphs) ───────────────────────────
+        # The compiled v8 graph ships a `variables` registry and an `aliases`
+        # map (Stage-1 notation → canonical symbol). When present, this is the
+        # single source of truth for symbol canonicalization, replacing the
+        # hand-maintained SYMBOL_ALIASES in config. Older graphs omit these keys
+        # → the maps are empty and the pipeline falls back to config aliases, so
+        # this is fully backward-compatible.
+        self.variables: dict[str, dict] = main_graph.get("variables", {})
+        self.aliases: dict[str, str] = main_graph.get("aliases", {})
+        # Build dimension-aware alias resolution: an alias may map to different
+        # canonicals by dimension (e.g. 'lambda' → wavelength [L] vs decay
+        # constant [T-1]). Index alias → [(dimension, canonical)].
+        self._alias_dim: dict[str, list] = {}
+        for sym, meta in self.variables.items():
+            for al in meta.get("aliases", []):
+                self._alias_dim.setdefault(al, []).append((meta.get("dimension", ""), sym))
 
         # ── Symbol → [equation_ids] index ────────────────────────────────────
         # sym_to_eqs["F"] → all equation IDs that contain symbol "F"
@@ -194,6 +270,109 @@ class GraphIndex:
 
     def get_equation(self, eq_id: str) -> dict | None:
         return self.nodes_by_id.get(eq_id)
+
+    # ── Symbol canonicalization (registry-driven) ─────────────────────────────
+
+    def canonical(self, sym: str, dim: str = "", unit: str = "") -> str:
+        """Map a Stage-1 symbol to the graph's canonical symbol for the SAME
+        physical quantity.
+
+        Some conventional symbols name two different quantities — 'T' is BOTH
+        temperature and period, 'Q' is heat and charge, 'P' is pressure and
+        power, 'V' is voltage and volume, 'I' is current and moment of inertia,
+        'E' is energy and electric field. These are registered with the second
+        meaning as an alias of the appropriate canonical, and disambiguated here
+        by the quantity Stage 1 reported. UNIT is tried first because Stage 1's
+        unit ('s', 'C', 'W') is far more reliable than its dimension field
+        (which is often a unit in disguise, e.g. 'A*s' or 'IT' for charge);
+        dimension is the fallback.
+
+        Returns `sym` unchanged if already canonical with no conflicting
+        candidate, or if unknown. Backward-compatible: graphs without a registry
+        have empty maps, so the pipeline's config fallback stays in charge.
+        """
+        if not sym:
+            return sym
+        # Stage 1 often emits unicode Greek (σ, λ, μ, ω, ρ, θ, Δ…) where the
+        # registry uses the spelled-out ASCII name (sigma, lambda, mu…). Fold to
+        # ASCII first so the alias lookup can match.
+        sym = _greek_to_ascii(sym)
+        # Gather candidate canonicals: the symbol itself (if canonical) plus any
+        # canonical it is an alias of. The canonical-self is listed first so a
+        # no-hint call keeps the symbol's primary meaning.
+        cands: list[str] = []
+        if sym in self.variables:
+            cands.append(sym)
+        for _d, canon in self._alias_dim.get(sym, []):
+            if canon not in cands:
+                cands.append(canon)
+        if not cands:
+            return self.aliases.get(sym, sym)
+        if len(cands) == 1:
+            return cands[0]
+        # Disambiguate by unit, then dimension.
+        if unit:
+            want_u = _normalize_unit(unit)
+            for c in cands:
+                if _normalize_unit(self.variables[c].get("unit", "")) == want_u:
+                    return c
+        if dim:
+            want_d = _normalize_dimension(dim)
+            for c in cands:
+                if _normalize_dimension(self.variables[c].get("dimension", "")) == want_d:
+                    return c
+        return cands[0]
+
+    def has_registry(self) -> bool:
+        """True when this graph ships a canonical variable registry (v8+)."""
+        return bool(self.variables)
+
+    def concept_symbol(self, sym: str, name: str = "", unit: str = "",
+                       dim: str = "") -> str:
+        """Resolve a Stage-1 quantity to its canonical symbol by CONCEPT, not
+        just by alias. Two tiers:
+
+          1. alias/unit canonicalization (canonical()) — the fast path that
+             handles known notations (mu_k→mu, T+s→T_p, Q+C→q).
+          2. NAME matching against the registry — the general fallback. Stage 1
+             labels every quantity with a `name` ("amplitude", "specific heat
+             capacity of water", "slit separation"); we match that name to the
+             registry variable whose name shares the most DISTINCTIVE tokens and
+             whose dimension/unit is compatible. This is what lets a given the
+             model called `A` (amplitude, unit m) bind to `A_amp` even though
+             `A` is canonically area, or `c_water` bind to `c_sp`.
+
+        Returns the canonical symbol, or the alias result if no confident name
+        match exists. No registry → returns `sym` (config fallback elsewhere)."""
+        base = self.canonical(sym, dim, unit)
+        if not self.variables:
+            return base
+        want = _concept_tokens(name)
+        if not want:
+            return base
+        wu = _normalize_unit(unit)
+        wd = _normalize_dimension(dim)
+        # Score every registry variable by distinctive-name overlap, restricted
+        # to dimensionally/unit-compatible ones. The current `base` is included
+        # as a candidate so a correct alias result still wins ties.
+        best_sym, best_score = base, 0
+        if base in self.variables:
+            best_score = len(want & _concept_tokens(self.variables[base].get("name", "")))
+        for csym, meta in self.variables.items():
+            mu = _normalize_unit(meta.get("unit", ""))
+            md = _normalize_dimension(meta.get("dimension", ""))
+            # require compatible unit OR dimension (Stage-1 unit is reliable;
+            # dimension is the looser backstop).
+            unit_ok = bool(wu) and bool(mu) and wu == mu
+            dim_ok = bool(wd) and bool(md) and wd == md
+            if not (unit_ok or dim_ok):
+                continue
+            score = len(want & _concept_tokens(meta.get("name", "")))
+            # strict improvement only, so `base` keeps ties (prevents drift
+            # between equivalent-scoring quantities like m vs m1).
+            if score > best_score:
+                best_sym, best_score = csym, score
+        return best_sym if best_score >= 1 else base
 
     def equations_containing_symbol(self, sym: str) -> list[dict]:
         """Return all equation nodes that contain the given symbol."""
